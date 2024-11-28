@@ -4,15 +4,15 @@ Christoph Heind, 2024
 https://github.com/cheind/mingru
 """
 
-import warnings
 import logging
+import warnings
+from pathlib import Path
 
 import numpy as np
+import tiktoken
 import torch
 import torch.nn.functional as F
 import torch.utils.data.dataloader
-
-import tiktoken
 
 import mingru
 
@@ -77,39 +77,12 @@ class NLPModel(torch.nn.Module):
         logits = self.fc(x)
         return logits, h
 
-    @torch.no_grad()
-    def generate(self, cond_idx, max_new_tokens, temperature=1.0, top_k=None):
-        """
-        Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
-        the sequence max_new_tokens times, feeding the predictions back into the model each time.
-        Most likely you'll want to make sure to be in model.eval() mode of operation for this.
-        """
-
-        # cond_idx (B,S)
-
-        inp = cond_idx
-        h = None
-
-        for _ in range(max_new_tokens):
-            # if the sequence context is growing too long we must crop it at block_size
-
-            logits, h = self.forward(inp, h)
-            logits = logits[:, -1, :] / temperature
-
-            if top_k is not None:
-                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits[logits < v[:, [-1]]] = -float("Inf")
-            probs = F.softmax(logits, dim=-1)
-            idx_next = torch.multinomial(probs, num_samples=1)
-            yield idx_next
-            inp = idx_next
-
 
 def train(cfg):
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    ds_train, ds_val = TokenIdDataset.from_textfile(cfg["input"], cfg["seqlen"])
+    ds_train, ds_val = TokenIdDataset.from_textfile(cfg["textfile"], cfg["seqlen"])
     dl_train = torch.utils.data.DataLoader(
         ds_train,
         batch_size=cfg["batch_size"],
@@ -153,86 +126,19 @@ def train(cfg):
                     f"Epoch {epoch+1}, Step {step+1}, Validation Accuracy: {val_acc*100:.2f}%, Validation Loss: {val_loss:.2f}"
                 )
                 if val_acc > best_acc:
-                    scripted = torch.jit.script(model)
-                    torch.jit.save(scripted, "nlp_best.pt")
                     _logger.info("New best model")
+                    scripted = torch.jit.script(model)
+                    torch.jit.save(
+                        scripted,
+                        f"tmp/"
+                        + Path(cfg["textfile"]).with_suffix(".nlp_best.pt").name,
+                    )
                     best_acc = val_acc
-                we = "All:"
-                them = generate_and_decode(model, dev, we, num_tokens=32, top_k=200)
-                _logger.info(f"{we}{them}")
+                demo = generate_text(model, dev, prefix="\n", num_tokens=32, top_k=200)
+                _logger.info(f"Sample model output: {demo}")
                 model.train()
 
         sched.step()
-
-    # classifier = UCF101Cla, 256, 50257ssifier(cfg).to(dev)
-
-    # transform = get_train_transform()
-    # fold = cfg["ucf101_fold"]
-    # ds = get_dataset(cfg, train=True, fold=fold, transform=transform)
-
-    # indices = np.random.permutation(len(ds))
-    # ds_train = torch.utils.data.Subset(ds, indices[:-200])
-    # ds_val = torch.utils.data.Subset(ds, indices[-200:])
-
-    # dl_train = torch.utils.data.DataLoader(
-    #     ds_train,
-    #     batch_size=cfg["batch_size"],
-    #     shuffle=True,
-    #     num_workers=cfg["dl_workers"],
-    #     collate_fn=custom_collate,
-    # )
-    # dl_val = torch.utils.data.DataLoader(
-    #     ds_val,
-    #     batch_size=cfg["batch_size"],
-    #     shuffle=True,
-    #     num_workers=cfg["dl_workers"],
-    #     collate_fn=custom_collate,
-    # )
-    # crit = torch.nn.CrossEntropyLoss()
-    # optimizer = torch.optim.Adam(
-    #     model.parameters(),
-    #     lr=cfg["lr"],
-    #     weight_decay=5e-5,
-    # )
-    # sched = torch.optim.lr_scheduler.StepLR(
-    #     optimizer,
-    #     cfg["num_epochs"] - 2,
-    #     gamma=0.1,
-    # )
-
-    # step = 0
-    # best_acc = 0.0
-    # best_loss = 1e5
-    # for epoch in range(cfg["num_epochs"]):
-    #     for video, labels in dl_train:
-    #         video = video.to(dev)
-    #         labels = labels.to(dev)
-    #         logits, _ = classifier(video)
-    #         loss = crit(logits, labels)
-    #         optimizer.zero_grad()
-    #         loss.backward()
-    #         optimizer.step()
-    #         correct = (logits.argmax(1) == labels).sum().item()
-    #         accuracy = 100 * correct / len(logits)
-    #         if step % 20 == 0:
-    #             _logger.info(
-    #                 f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, Accuracy: {accuracy:.2f}%"
-    #             )
-    #         if (step + 1) % 500 == 0:
-    #             val_acc, val_loss = validate(classifier, dev, dl_val)
-    #             _logger.info(
-    #                 f"Epoch {epoch+1}, Step {step+1}, Validation Accuracy: {val_acc*100:.2f}%, Validation Loss: {val_loss:.2f}"
-    #             )
-    #             if val_acc > best_acc or (val_acc == best_acc and val_loss < best_loss):
-    #                 scripted = torch.jit.script(classifier)
-    #                 torch.jit.save(scripted, "ucf101_classifier_best.pt")
-    #                 _logger.info("New best model")
-    #                 best_acc = val_acc
-    #                 best_loss = val_loss
-    #         step += 1
-    #     sched.step()
-
-    # return classifier
 
 
 @torch.no_grad()
@@ -275,19 +181,19 @@ from itertools import islice
 
 
 @torch.no_grad()
-def generate_and_decode(
+def generate_text(
     model: NLPModel,
     dev: torch.device,
-    cond: str,
+    prefix: str,
     num_tokens: int,
     temperature: float = 1.0,
     top_k: int = None,
-):
-    model.eval()
+) -> str:
     enc = tiktoken.get_encoding("gpt2")
-    ids = torch.tensor(enc.encode_ordinary(cond)).to(dev).unsqueeze(0)
-    gen = model.generate(
-        ids,
+    ids = torch.tensor(enc.encode_ordinary(prefix), dtype=int).to(dev).unsqueeze(0)
+    gen = generate_tokens(
+        model,
+        prefix_ids=ids,
         max_new_tokens=num_tokens,
         temperature=temperature,
         top_k=top_k,
@@ -297,20 +203,42 @@ def generate_and_decode(
 
 
 @torch.no_grad()
-def sample(cfg, model):
+def generate_tokens(model, prefix_ids, max_new_tokens, temperature=1.0, top_k=None):
+    assert prefix_ids.shape[1] > 0, "Need at least one start token"
+    inp = prefix_ids
+    h = None
+
+    for _ in range(max_new_tokens):
+        logits, h = model.forward(inp, h)
+        logits = logits[:, -1, :] / temperature
+        if top_k is not None:
+            v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+            logits[logits < v[:, [-1]]] = -float("Inf")
+        probs = F.softmax(logits, dim=-1)
+        idx_next = torch.multinomial(probs, num_samples=1)
+        yield idx_next
+        inp = idx_next
+
+
+@torch.no_grad()
+def sample(cfg):
+    model = torch.jit.load(cfg["ckpt"])
+    model.eval()
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    output = generate_text(model, dev, args.precond, args.num_tokens, top_k=200)
+    print(output)
 
 
 if __name__ == "__main__":
 
-    import os
     import argparse
+    import os
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s: %(message)s",
         handlers=[
-            logging.FileHandler("shakespeare.log.txt", mode="a"),
+            logging.FileHandler("tmp/nlp.log.txt", mode="a"),
             logging.StreamHandler(),
         ],
     )
@@ -319,28 +247,30 @@ if __name__ == "__main__":
         "seqlen": 256,
         "vocab_size": 50257,
         "emb_size": 768,
-        "hidden_sizes": [64, 128, 256, 256, 512],
-        "dropout": 0.0,
+        "hidden_sizes": [128, 128, 256, 256, 512],
+        "dropout": 0.15,
         "num_epochs": 7,
         "batch_size": 64,
-        "lr": 1e-4,
+        "lr": 1e-3,
     }
 
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="cmd")
     train_parser = subparsers.add_parser("train", help="train")
-    train_parser.add_argument("input", help="Path to TinyShakespeare file.")
+    train_parser.add_argument("textfile", help="Path to text file to train on.")
     sample_parser = subparsers.add_parser("sample", help="sample")
     sample_parser.add_argument("--ckpt", default="shakespeare_best.pt")
+    sample_parser.add_argument("--precond", help="preconditioning text", default="")
+    sample_parser.add_argument("--num-tokens", default=256)
     args = parser.parse_args()
 
     if args.cmd == "train":
-        cfg["input"] = args.input
+        cfg.update(vars(args))
         _logger.info(f"New training session with {cfg}")
         train(cfg)
         # train(cfg)
 
     elif args.cmd == "sample":
         _logger.info(f"New sampling session with {cfg}")
-        model = torch.jit.load(args.ckpt)
-        sample(cfg, model)
+        cfg.update(vars(args))
+        sample(cfg)
