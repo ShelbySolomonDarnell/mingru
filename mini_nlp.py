@@ -100,7 +100,7 @@ def train(cfg):
     opt = torch.optim.Adam(
         model.parameters(),
         lr=cfg["lr"],
-        weight_decay=5e-5,
+        weight_decay=5e-4,
     )
     sched = torch.optim.lr_scheduler.StepLR(
         opt,
@@ -189,12 +189,12 @@ def generate_text(
     temperature: float = 1.0,
     top_k: int = None,
 ) -> str:
+    print(num_tokens)
     enc = tiktoken.get_encoding("gpt2")
     ids = torch.tensor(enc.encode_ordinary(prefix), dtype=int).to(dev).unsqueeze(0)
     gen = generate_tokens(
         model,
         prefix_ids=ids,
-        max_new_tokens=num_tokens,
         temperature=temperature,
         top_k=top_k,
     )
@@ -203,12 +203,12 @@ def generate_text(
 
 
 @torch.no_grad()
-def generate_tokens(model, prefix_ids, max_new_tokens, temperature=1.0, top_k=None):
+def generate_tokens(model, prefix_ids, temperature=1.0, top_k=None):
     assert prefix_ids.shape[1] > 0, "Need at least one start token"
     inp = prefix_ids
     h = None
 
-    for _ in range(max_new_tokens):
+    while True:
         logits, h = model.forward(inp, h)
         logits = logits[:, -1, :] / temperature
         if top_k is not None:
@@ -247,7 +247,7 @@ if __name__ == "__main__":
         "seqlen": 256,
         "vocab_size": 50257,
         "emb_size": 768,
-        "hidden_sizes": [128, 128, 256, 256, 512],
+        "hidden_sizes": [32, 64, 128, 256],
         "dropout": 0.15,
         "num_epochs": 7,
         "batch_size": 64,
@@ -259,9 +259,9 @@ if __name__ == "__main__":
     train_parser = subparsers.add_parser("train", help="train")
     train_parser.add_argument("textfile", help="Path to text file to train on.")
     sample_parser = subparsers.add_parser("sample", help="sample")
-    sample_parser.add_argument("--ckpt", default="shakespeare_best.pt")
-    sample_parser.add_argument("--precond", help="preconditioning text", default="")
-    sample_parser.add_argument("--num-tokens", default=256)
+    sample_parser.add_argument("--precond", help="preconditioning text", default="\n")
+    sample_parser.add_argument("--num-tokens", type=int, default=256)
+    sample_parser.add_argument("ckpt")
     args = parser.parse_args()
 
     if args.cmd == "train":
