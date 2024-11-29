@@ -90,7 +90,6 @@ class MinGRU(torch.nn.Module):
     layer_sizes: Final[tuple[int, ...]]
     num_layers: Final[int]
     residual: Final[bool]
-    dropout: Final[float]
 
     def __init__(
         self,
@@ -98,6 +97,7 @@ class MinGRU(torch.nn.Module):
         hidden_sizes: int | list[int],
         *,
         bias: bool = True,
+        norm: bool = True,
         dropout: float = 0.0,
         residual: bool = False,
         device: torch.device = None,
@@ -110,6 +110,7 @@ class MinGRU(torch.nn.Module):
             hidden_sizes: list of number of features in each stacked hidden
                 state
             bias: If false, no bias weights will be allocated in linear layers
+            norm: If true, adds layer normalization to inputs of each layer.
             dropout: If > 0, dropout will be applied to each layer input,
                 except for last layer.
             residual: If true, residual connections will be added between each
@@ -128,44 +129,41 @@ class MinGRU(torch.nn.Module):
         self.num_layers = len(hidden_sizes)
         self.dropout = max(min(dropout, 1.0), 0.0)
         self.residual = residual
+        self.norm = norm
 
-        self.to_gate_hidden = self._create_linear_gate_hidden_layers(
-            device, dtype, bias
-        )
-        if residual:
-            self.residual_layers = self._create_residual_align_layers(
-                device,
-                dtype,
-            )
-        else:
-            # Needed for scripting
-            self.residual_layers = torch.nn.ModuleList()
-
-    def _create_linear_gate_hidden_layers(
-        self, device: torch.device, dtype: torch.dtype, bias: bool
-    ):
-        factory_kwargs = {"device": device, "dtype": dtype, "bias": bias}
         layers = []
-        # combine linear gate and hidden transform
-        for ind, outd in zip(self.layer_sizes[:-1], self.layer_sizes[1:]):
-            gh = torch.nn.Linear(ind, outd * 2, **factory_kwargs)
-            layers.append(gh)
-        return torch.nn.ModuleList(layers)
+        factory_kwargs = {"device": device, "dtype": dtype}
+        gen = zip(self.layer_sizes[:-1], self.layer_sizes[1:])
+        for lidx, (ind, outd) in enumerate(gen):
+            # Gate and hidden linear features
+            mdict = {}
 
-    def _create_residual_align_layers(
-        self,
-        device: torch.device,
-        dtype: torch.dtype,
-    ):
-        factory_kwargs = {"device": device, "dtype": dtype, "bias": False}
-        layers = []
-        for ind, outd in zip(self.layer_sizes[:-1], self.layer_sizes[1:]):
-            if ind != outd:
-                al = torch.nn.Linear(ind, outd, **factory_kwargs)
+            if norm:
+                mdict["norm"] = torch.nn.LayerNorm(ind)
             else:
-                al = torch.nn.Identity()
-            layers.append(al)
-        return torch.nn.ModuleList(layers)
+                mdict["norm"] = torch.nn.Identity()
+
+            # Combined linear features for gate and hidden
+            mdict["gate_hidden"] = torch.nn.Linear(
+                ind, outd * 2, bias=bias, **factory_kwargs
+            )
+
+            # Residual alignment layer if features size mismatch
+            if residual and ind != outd:
+                mdict["res_align"] = torch.nn.Linear(
+                    ind, outd, bias=False, **factory_kwargs
+                )
+            else:
+                mdict["res_align"] = torch.nn.Identity()
+
+            # Dropout for outputs except for last
+            if dropout > 0.0 and lidx < (self.num_layers - 1):
+                mdict["dropout"] = torch.nn.Dropout(p=dropout)
+            else:
+                mdict["dropout"] = torch.nn.Identity()
+
+            layers.append(torch.nn.ModuleDict(mdict))
+        self.layers = torch.nn.ModuleList(layers)
 
     def forward(
         self,
@@ -196,32 +194,17 @@ class MinGRU(torch.nn.Module):
         next_hidden = []
 
         # hidden states across layers
-        for lidx, gh_layer in enumerate(self.to_gate_hidden):
+        for lidx, layer in enumerate(self.layers):
             h_prev = h[lidx]
-
-            gate, hidden = gh_layer(inp).chunk(2, dim=2)
+            gate, hidden = layer.gate_hidden(layer.norm(inp)).chunk(2, dim=2)
             out = mF.mingru_gate_hidden(gate, hidden, h_prev)
-            # (B,S,hidden_dims)
-
-            # Save final hidden state of layer
             next_hidden.append(out[:, -1:])
 
             # Add skip connection
             if self.residual:
-                # ModuleInterace is required to support dynamic indexing of
-                # ModuleLists.
-                # See https://github.com/pytorch/pytorch/issues/47496
-                al: ModuleInterface = self.residual_layers[lidx]
-                out = out + al.forward(inp)
+                out = out + layer.res_align(inp)
 
-            # Apply dropout (except for last)
-            is_not_last = lidx < (self.num_layers - 1)
-            if is_not_last and (self.dropout > 0):
-                out = torch.nn.functional.dropout(
-                    out, p=self.dropout, training=self.training
-                )
-
-            # Next input is previous output
+            out = layer.dropout(out)
             inp = out
 
         return out, next_hidden
