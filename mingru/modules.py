@@ -11,13 +11,6 @@ import torch
 from . import functional as mF
 
 
-# Used for dynamic indexing of torch.nn.ModuleList during scripting.
-@torch.jit.interface
-class ModuleInterface(torch.nn.Module):
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        pass
-
-
 class MinGRUCell(torch.nn.Module):
     """A minimal gated recurrent unit cell."""
 
@@ -97,7 +90,7 @@ class MinGRU(torch.nn.Module):
         hidden_sizes: int | list[int],
         *,
         bias: bool = True,
-        norm: bool = True,
+        norm: bool = False,
         dropout: float = 0.0,
         residual: bool = False,
         device: torch.device = None,
@@ -314,6 +307,14 @@ class MinConv2dGRUCell(torch.nn.Module):
         return mF.g(x.new_zeros(x.shape[0], 1, self.layer_sizes[-1], H, W))
 
 
+class DynamicSequenceLayerNorm(torch.nn.Module):
+
+    def forward(self, inp):
+        shp = inp.shape[2:]
+        out = torch.nn.functional.layer_norm(inp, shp)
+        return out
+
+
 class MinConv2dGRU(torch.nn.Module):
     """A multi-layer minimal convolutional gated recurrent unit (MinGRU)."""
 
@@ -333,6 +334,7 @@ class MinConv2dGRU(torch.nn.Module):
         dropout: float = 0.0,
         residual: bool = False,
         bias: bool = True,
+        norm: bool = False,
         device: torch.device = None,
         dtype: torch.dtype = None,
     ):
@@ -349,6 +351,8 @@ class MinConv2dGRU(torch.nn.Module):
                 are added. If spatials or feature dimensions mismatch,
                 necessary alignment convolutions are added.
             bias: If false, no bias weights will be allocated
+            norm: If true, a layer normalization across (C,H,W) will be
+                applied without learnable affine weights
             device: optional device for linear layer
             dtype: optional dtype for linear layer
         """
@@ -371,82 +375,57 @@ class MinConv2dGRU(torch.nn.Module):
         self.dropout = max(min(dropout, 1.0), 0.0)
         self.residual = residual
 
-        self.to_gate_hidden = self._create_conv_gate_hidden_layers(
-            kernel_sizes=kernel_sizes,
-            strides=strides,
-            paddings=paddings,
-            device=device,
-            dtype=dtype,
-            bias=bias,
-        )
-        if residual:
-            self.residual_layers = self._create_residual_align_layers(
-                kernel_sizes=kernel_sizes,
-                strides=strides,
-                paddings=paddings,
-                device=device,
-                dtype=dtype,
-            )
-        else:
-            # Needed for scripting
-            self.residual_layers = torch.nn.ModuleList()
-
-    def _create_conv_gate_hidden_layers(
-        self,
-        kernel_sizes: list[int],
-        strides: list[int],
-        paddings: list[int],
-        device: torch.device,
-        dtype: torch.dtype,
-        bias: bool,
-    ):
-        factory_kwargs = {"device": device, "dtype": dtype, "bias": bias}
+        factory_kwargs = {"device": device, "dtype": dtype}
         layers = []
-        for lidx, (ind, outd) in enumerate(
-            zip(self.layer_sizes[:-1], self.layer_sizes[1:])
-        ):
-            gh = torch.nn.Conv2d(
+
+        gen = zip(self.layer_sizes[:-1], self.layer_sizes[1:])
+        for lidx, (ind, outd) in enumerate(gen):
+            # Gate and hidden linear features
+            mdict = {}
+
+            if norm:
+                mdict["norm"] = DynamicSequenceLayerNorm()
+            else:
+                mdict["norm"] = torch.nn.Identity()
+
+            # Combined linear features for gate and hidden
+            mdict["gate_hidden"] = torch.nn.Conv2d(
                 ind,
                 outd * 2,
+                bias=bias,
                 kernel_size=kernel_sizes[lidx],
                 stride=strides[lidx],
                 padding=paddings[lidx],
                 **factory_kwargs,
             )
-            layers.append(gh)
-        return torch.nn.ModuleList(layers)
 
-    def _create_residual_align_layers(
-        self,
-        kernel_sizes: list[int],
-        strides: list[int],
-        paddings: list[int],
-        device: torch.device,
-        dtype: torch.dtype,
-    ):
-        factory_kwargs = {"device": device, "dtype": dtype, "bias": False}
-        layers = []
-        for lidx, (ind, outd) in enumerate(
-            zip(self.layer_sizes[:-1], self.layer_sizes[1:])
-        ):
-            # Need to deal with different input/output channels and spatial
-            # dims
-            with torch.no_grad():
-                x = torch.randn(1, ind, 16, 16)
-                y = self.to_gate_hidden[lidx](x)
-            if ind != outd or x.shape[2:] != y.shape[2:]:
-                al = torch.nn.Conv2d(
-                    ind,
-                    outd,
-                    kernel_size=kernel_sizes[lidx],
-                    stride=strides[lidx],
-                    padding=paddings[lidx],
-                    **factory_kwargs,
-                )
+            # Residual alignment layer if features size or
+            # spatial dims mismatch
+            if residual:
+                with torch.no_grad():
+                    x = torch.randn(1, ind, 16, 16)
+                    y = mdict["gate_hidden"](x)
+                if ind != outd or x.shape[2:] != y.shape[2:]:
+                    mdict["res_align"] = torch.nn.Conv2d(
+                        ind,
+                        outd,
+                        bias=False,
+                        kernel_size=kernel_sizes[lidx],
+                        stride=strides[lidx],
+                        padding=paddings[lidx],
+                        **factory_kwargs,
+                    )
+                else:
+                    mdict["res_align"] = torch.nn.Identity()
+
+            # Dropout for outputs except for last
+            if dropout > 0.0 and lidx < (self.num_layers - 1):
+                mdict["dropout"] = torch.nn.Dropout(p=dropout)
             else:
-                al = torch.nn.Identity()
-            layers.append(al)
-        return torch.nn.ModuleList(layers)
+                mdict["dropout"] = torch.nn.Identity()
+
+            layers.append(torch.nn.ModuleDict(mdict))
+        self.layers = torch.nn.ModuleList(layers)
 
     def forward(
         self,
@@ -475,45 +454,28 @@ class MinConv2dGRU(torch.nn.Module):
         if h is None:
             h = self.init_hidden_state(x)
 
-        # input to next layer
+        B, S = x.shape[:2]
         inp = x
         next_hidden = []
 
         # hidden states across layers
-        for lidx, gh_layer in enumerate(self.to_gate_hidden):
+        for lidx, layer in enumerate(self.layers):
             h_prev = h[lidx]
 
-            B, S = inp.shape[:2]
             gate, hidden = (
-                gh_layer(inp.flatten(0, 1))
-                .unflatten(
-                    0,
-                    (B, S),
-                )
+                layer.gate_hidden(layer.norm(inp).flatten(0, 1))
+                .unflatten(0, (B, S))
                 .chunk(2, dim=2)
             )
-            out = mF.mingru_gate_hidden(gate, hidden, h_prev)
-            # (B,S,hidden_dims)
 
-            # Save final hidden state of layer
+            out = mF.mingru_gate_hidden(gate, hidden, h_prev)
             next_hidden.append(out[:, -1:])
 
             # Add skip connection
             if self.residual:
-                # ModuleInterace is required to support dynamic indexing of
-                # ModuleLists.
-                # See https://github.com/pytorch/pytorch/issues/47496
-                al: ModuleInterface = self.residual_layers[lidx]
-                out = out + al.forward(inp.flatten(0, 1)).unflatten(0, (B, S))
+                out = out + layer.res_align(inp.flatten(0, 1)).unflatten(0, (B, S))
 
-            # Apply dropout (except for last)
-            is_not_last = lidx < (self.num_layers - 1)
-            if is_not_last and (self.dropout > 0):
-                out = torch.nn.functional.dropout(
-                    out, p=self.dropout, training=self.training
-                )
-
-            # Next input is previous output
+            out = layer.dropout(out)
             inp = out
 
         return out, next_hidden
@@ -528,9 +490,9 @@ class MinConv2dGRU(torch.nn.Module):
         with torch.no_grad():
             # Cannot make the following a reusable function because
             # nn.Modules are not accepted as parameters in scripting...
-            for lidx, gh in enumerate(self.to_gate_hidden):
+            for lidx, layer in enumerate(self.layers):
                 y, _ = (
-                    gh(x[:1, :1].flatten(0, 1))
+                    layer.gate_hidden(x[:1, :1].flatten(0, 1))
                     .unflatten(
                         0,
                         (1, 1),
