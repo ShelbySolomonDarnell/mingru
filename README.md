@@ -20,6 +20,7 @@ Each module supports the following features (if applicable to type)
  - **Dropout**: Via parameter `dropout=`, when > 0 all inputs of each layer are effected except for the last layer.
  - **Residual**: Residual connections betweeen outputs of minGRU layers via `residual=` argument.
  - **Bias**: Biases in linear layers can be enabled and disabled via the `bias=` argument.
+ - **Normalization**: LayerNorm and GroupNorms between stacked MinGRUs via `norm=`argument.
  - **Scripting**: MinGRU is compatible with `torch.jit.script`.
  - **Compatibility**: Interface of `mingru.*` is mostly compatible with that of `torch.nn.GRU/GRUCell`, except that bi-directional and sequence-first arguments are not supported. Cells in **mingru** also support sequence arguments to benefit from parallel computation.
 
