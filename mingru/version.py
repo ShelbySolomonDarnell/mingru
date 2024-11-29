@@ -4,4 +4,4 @@ Christoph Heind, 2024
 https://github.com/cheind/mingru
 """
 
-VERSION = "1.4.0"
+VERSION = "1.4.2"
