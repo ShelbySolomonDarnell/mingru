@@ -7,6 +7,7 @@ https://github.com/cheind/mingru
 from typing import Final
 
 import torch
+import numpy as np
 
 from . import functional as mF
 
@@ -351,8 +352,10 @@ class MinConv2dGRU(torch.nn.Module):
                 are added. If spatials or feature dimensions mismatch,
                 necessary alignment convolutions are added.
             bias: If false, no bias weights will be allocated
-            norm: If true, a layer normalization across (C,H,W) will be
-                applied without learnable affine weights
+            norm: If true, applies group normalization to inputs of each layer.
+                The number of groups is maximized as long as more than
+                4 channels per group are left. See
+                https://arxiv.org/pdf/1803.08494
             device: optional device for linear layer
             dtype: optional dtype for linear layer
         """
@@ -384,7 +387,10 @@ class MinConv2dGRU(torch.nn.Module):
             mdict = {}
 
             if norm:
-                mdict["norm"] = DynamicSequenceLayerNorm()
+                groups = [64, 32, 16, 8, 4, 1]
+                states = [(ind % g == 0) and (ind // g) >= min(4, ind) for g in groups]
+                choice = np.where(states)[0][0]
+                mdict["norm"] = torch.nn.GroupNorm(groups[choice], ind)
             else:
                 mdict["norm"] = torch.nn.Identity()
 
@@ -463,7 +469,7 @@ class MinConv2dGRU(torch.nn.Module):
             h_prev = h[lidx]
 
             gate, hidden = (
-                layer.gate_hidden(layer.norm(inp).flatten(0, 1))
+                layer.gate_hidden(layer.norm(inp.flatten(0, 1)))
                 .unflatten(0, (B, S))
                 .chunk(2, dim=2)
             )
