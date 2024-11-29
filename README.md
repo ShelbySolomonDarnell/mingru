@@ -130,19 +130,18 @@ out_par, h = rnn(x, rnn.init_hidden_state(x))
 assert torch.allclose(out_seq, out_par, atol=1e-4)
 ```
 
-### Selective Copying
-For a more complete example check the [selective_copying.py](./selective_copying.py), which attempts to learn to selectively pick specific tokens in order from a generated sequence.
+### Examples
+
+#### Selective Copying
+For a more complete example check the [examples/selective_copying.py](./examples/selective_copying.py), which attempts to learn to selectively pick specific tokens in order from a generated sequence.
 
 ```shell
-python selective_copying.py
+python -m examples.selective_copying
     ...
-    Step [1381/1500], Loss: 0.0005, Accuracy: 98.44%
-    Step [1401/1500], Loss: 0.0002, Accuracy: 99.61%
-    Step [1421/1500], Loss: 0.0005, Accuracy: 97.66%
-    Step [1441/1500], Loss: 0.0009, Accuracy: 98.05%
-    Step [1461/1500], Loss: 0.0014, Accuracy: 96.88%
-    Step [1481/1500], Loss: 0.0005, Accuracy: 98.05%
-    Validation Accuracy: 98.44%
+    Step [1941/2000], Loss: 0.0002, Accuracy: 99.61%
+    Step [1961/2000], Loss: 0.0002, Accuracy: 100.00%
+    Step [1981/2000], Loss: 0.0002, Accuracy: 99.61%
+    Validation Accuracy: 100.00%
 ```
 
 Per default, the example is configured for a small usecase (sequence length 64, vocab size 6, memorize 4), but you might just change to a much larger test by adopting `cfg` dict at the end of the file.
@@ -150,7 +149,7 @@ Per default, the example is configured for a small usecase (sequence length 64, 
 Task is based on
 > Gu, Albert, and Tri Dao. "Mamba: Linear-time sequence modeling with selective state spaces." (2023).
 
-### Video Classification
+#### Video Classification
 Trains a video classification network using convolutional MinGRUs from scratch using UCF101 train/test splits. Mimicks the
 architecture of 
 
@@ -158,19 +157,30 @@ architecture of
 
 On fold 1 this achieves a validation accuracy 98% and 64% on test. This is quite expected given that pretraining was done on ImageNet only. We expect much better test results when pretraining is done on larger video action datasets.
 
+First please register the following environment variables
 
-```python
-python ucf101_classification.py -f 1 train
+```shell
+# Set path to UCF dataset and annotations
+export UCF101_PATH=/path/to/UCF/dir
+export UCF101_ANNPATH=/path/to/ann/dir
+```
+
+##### Train
+
+```shell
+python -m examples.video_classification train -f 1
     ...
     2024-11-26 15:58:18,742: Epoch 7, Step 75961, Loss: 0.0588, Accuracy: 100.00%
     2024-11-26 15:58:25,421: Epoch 7, Step 75981, Loss: 0.0096, Accuracy: 100.00%
     2024-11-26 15:58:37,921: Epoch 7, Step 76000, Validation Accuracy: 98.00%, Validation Loss: 0.01
 ```
 
+##### Test
+
 Test protocol is based on Paper using 25 clips from each video and perform average/majority voting
 
-```python
-python ucf101_classification.py -f 1 test
+```shell
+python -m examples.video_classification test -f 1 tmp/video_classifier_best.pt
     ...
     2024-11-27 08:05:02,508: 3780/3783, acc 0.64
     2024-11-27 08:05:04,657: 3781/3783, acc 0.64
@@ -178,3 +188,33 @@ python ucf101_classification.py -f 1 test
     2024-11-27 08:05:09,290: 3783/3783, acc 0.64
     2024-11-27 08:05:09,290: test acc 0.64
 ```
+
+#### Generative Predictive Text 
+
+Trains and samples from a GPT2-like model, but uses stacked MinGRUs instead of transformers. Adapted from 
+[nanoGPT](https://github.com/karpathy/nanoGPT).
+
+##### Train
+Dataset is currently restricted to a single text file. We use [Tiny-Shakespeare](https://huggingface.co/datasets/Trelis/tiny-shakespeare)
+
+```shell
+python -m examples.nlp train tmp/tinyshakespeare.txt
+```
+
+##### Sample
+```shell
+python -m examples.nlp sample --num-tokens 512 tmp/tinyshakespeare.nlp_best.pt
+
+    LEONTES:
+    So must not, honesty with it, though I think thou
+    Hadst see me for an unknit. Yet'st thou
+    For being freed when was Antigon fellow
+    Is gone the obedience: rich mother: I must push
+    In that our nest till yet first shall I stand.
+
+    PAULINA:
+    Music, when she speaks,
+    No, such a guest go: thy trust not the day.
+    ...
+```
+

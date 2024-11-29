@@ -184,7 +184,7 @@ def train(cfg):
                 )
                 if val_acc > best_acc or (val_acc == best_acc and val_loss < best_loss):
                     scripted = torch.jit.script(classifier)
-                    torch.jit.save(scripted, "tmp/ucf101_classifier_best.pt")
+                    torch.jit.save(scripted, "tmp/video_classifier_best.pt")
                     _logger.info("New best model")
                     best_acc = val_acc
                     best_loss = val_loss
@@ -293,7 +293,7 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s: %(message)s",
         handlers=[
-            logging.FileHandler("tmp/ucf101.log.txt", mode="a"),
+            logging.FileHandler("tmp/video_classifier.log.txt", mode="a"),
             logging.StreamHandler(),
         ],
     )
