@@ -152,13 +152,13 @@ Task is based on
 
 #### Video Classification
 Trains a video classification network using convolutional MinGRUs from scratch using UCF101 train/test splits. Mimicks the
-architecture of 
+(first) architecture of 
 
 > Ballas, Nicolas, Li Yao1 Chris Pal, and Aaron Courville. "Delving deeper into convolution networks for learning video representation." (2015).
 
-On fold 1 this achieves a validation accuracy 98% and 64% on test. This is quite expected given that pretraining was done on ImageNet only. We expect much better test results when pretraining is done on larger video action datasets.
+On fold 1 this achieves a validation top-1 accuracy 98% and 70% on test. This is quite expected given that pretraining was done on ImageNet and UCF101 is prone to overfit. One can expect better test results when pretraining is done on larger video action datasets.
 
-First please register the following environment variables
+First, register these environment variables
 
 ```shell
 # Set path to UCF dataset and annotations
@@ -171,9 +171,9 @@ export UCF101_ANNPATH=/path/to/ann/dir
 ```shell
 python -m examples.video_classification train -f 1
     ...
-    2024-11-26 15:58:18,742: Epoch 7, Step 75961, Loss: 0.0588, Accuracy: 100.00%
-    2024-11-26 15:58:25,421: Epoch 7, Step 75981, Loss: 0.0096, Accuracy: 100.00%
-    2024-11-26 15:58:37,921: Epoch 7, Step 76000, Validation Accuracy: 98.00%, Validation Loss: 0.01
+    2024-12-01 07:53:26,868: Epoch 7, Step 75961, Loss: 0.0042, Accuracy: 100.00%
+    2024-12-01 07:53:43,763: Epoch 7, Step 75981, Loss: 0.1159, Accuracy: 93.75%
+    2024-12-01 07:54:05,992: Epoch 7, Step 76000, Validation Accuracy: 99.50%, Validation Loss: 0.00
 ```
 
 ##### Test
@@ -183,11 +183,9 @@ Test protocol is based on Paper using 25 clips from each video and perform avera
 ```shell
 python -m examples.video_classification test -f 1 tmp/video_classifier_best.pt
     ...
-    2024-11-27 08:05:02,508: 3780/3783, acc 0.64
-    2024-11-27 08:05:04,657: 3781/3783, acc 0.64
-    2024-11-27 08:05:06,810: 3782/3783, acc 0.64
-    2024-11-27 08:05:09,290: 3783/3783, acc 0.64
-    2024-11-27 08:05:09,290: test acc 0.64
+    2024-12-01 08:19:27,585: Acc: 0.7048961511382305
+    2024-12-01 08:19:27,762: Acc: 0.7047927727099405
+    2024-12-01 08:19:27,799: Test accuracy 0.70
 ```
 
 #### Generative Predictive Text 

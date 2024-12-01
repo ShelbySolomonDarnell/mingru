@@ -92,7 +92,7 @@ def custom_collate(batch):
     return torch.utils.data.dataloader.default_collate(filtered_batch)
 
 
-# fold1: 98% top1 on val, 65% on test split
+# fold1: 98% top1 on val, 70% on test split
 class UCF101Classifier(torch.nn.Module):
     def __init__(self, cfg):
         super().__init__()
