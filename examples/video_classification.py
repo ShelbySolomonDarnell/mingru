@@ -62,7 +62,7 @@ def get_quick_test_transform():
     return v2.Compose(
         [
             ToVideo(),
-            v2.CenterCrop(224),
+            v2.Resize((224, 224)),
             v2.ToDtype(torch.float, scale=True),
             v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
@@ -96,40 +96,56 @@ def custom_collate(batch):
 class UCF101Classifier(torch.nn.Module):
     def __init__(self, cfg):
         super().__init__()
-        self.backbone = vgg16(weights=VGG16_Weights.IMAGENET1K_V1).features[:16]
-        for p in self.backbone.parameters():
-            p.requires_grad = False
-
-        self.rnn = mingru.MinConv2dGRU(
-            input_size=256,
-            hidden_sizes=cfg["hidden_sizes"],
-            kernel_sizes=3,
-            strides=2,
-            paddings=1,
-            dropout=cfg["dropout"],
-            norm=cfg["norm"],
-            residual=True,
-            bias=True,
+        parts = [0, 5, 10, 17, 24, 31]
+        backbone = vgg16(weights=VGG16_Weights.IMAGENET1K_V1).features
+        self.feature_parts = torch.nn.ModuleList(
+            [backbone[f:t] for f, t in zip(parts[:-1], parts[1:])]
         )
 
-        self.fc = torch.nn.Linear(sum(cfg["hidden_sizes"]), 101)
+        self.rnns = torch.nn.ModuleList(
+            [
+                mingru.MinConv2dGRU(
+                    input_size=s,
+                    hidden_sizes=[s, s],
+                    kernel_sizes=3,
+                    strides=2,
+                    paddings=1,
+                    dropout=cfg["dropout"],
+                    norm=cfg["norm"],
+                    residual=True,
+                    bias=True,
+                )
+                for s in [64, 128, 256, 512, 512]
+            ]
+        )
 
-    def forward(self, video, h: list[torch.Tensor] | None = None):
+        self.fc = torch.nn.Linear(sum([64, 128, 256, 512, 512]) * 2 * 2, 101)
+
+    def forward(self, video):
         B, S = video.shape[:2]
-        with torch.no_grad():
-            features = self.backbone(video.flatten(0, 1)).unflatten(0, (B, S))
-        out, h = self.rnn.forward(features, h=h)
 
-        h_pooled = [F.adaptive_avg_pool2d(hh.squeeze(1), (1, 1)) for hh in h]
-        h_pooled = torch.cat(h_pooled, 1).squeeze()
-        y = self.fc(h_pooled)
-        return y, h
+        x = video.flatten(0, 1)
+        features = []
+        for part in self.feature_parts:
+            x = part(x)
+            features.append(x.unflatten(0, (B, S)))
+
+        outs = []
+        for idx, rnn in enumerate(self.rnns):
+            out, _ = rnn(features[idx])
+            outs.append(out)
+
+        outs_pooled = [F.adaptive_avg_pool2d(out[:, -1], (2, 2)) for out in outs]
+        outs_pooled = torch.cat(outs_pooled, 1).flatten(1)
+        return self.fc(outs_pooled), None
 
 
 def train(cfg):
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     classifier = UCF101Classifier(cfg).to(dev)
+
+    classifier(torch.randn(1, 10, 3, 224, 224).to(dev))
 
     transform = get_train_transform()
     fold = cfg["ucf101_fold"]
