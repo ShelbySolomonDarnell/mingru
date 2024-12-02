@@ -4,6 +4,7 @@ Christoph Heind, 2024
 https://github.com/cheind/mingru
 """
 
+import abc
 from typing import Final
 
 import torch
@@ -12,7 +13,15 @@ import numpy as np
 from . import functional as mF
 
 
-class MinGRUCell(torch.nn.Module):
+class MinGRUBase(torch.nn.Module, metaclass=abc.ABCMeta):
+
+    @abc.abstractmethod
+    @torch.jit.export
+    def init_hidden_state(self, x: torch.Tensor) -> torch.Tensor:
+        """Initialize a 'zero' hidden state."""
+
+
+class MinGRUCell(MinGRUBase):
     """A minimal gated recurrent unit cell."""
 
     layer_sizes: Final[tuple[int, ...]]
@@ -78,7 +87,7 @@ class MinGRUCell(torch.nn.Module):
         return mF.g(x.new_zeros(x.shape[0], 1, self.layer_sizes[-1]))
 
 
-class MinGRU(torch.nn.Module):
+class MinGRU(MinGRUBase):
     """A multi-layer minimal gated recurrent unit (MinGRU)."""
 
     layer_sizes: Final[tuple[int, ...]]
@@ -211,7 +220,7 @@ class MinGRU(torch.nn.Module):
         ]
 
 
-class MinConv2dGRUCell(torch.nn.Module):
+class MinConv2dGRUCell(MinGRUBase):
     """A minimal convolutional gated recurrent unit cell."""
 
     layer_sizes: Final[tuple[int, ...]]
@@ -308,15 +317,7 @@ class MinConv2dGRUCell(torch.nn.Module):
         return mF.g(x.new_zeros(x.shape[0], 1, self.layer_sizes[-1], H, W))
 
 
-class DynamicSequenceLayerNorm(torch.nn.Module):
-
-    def forward(self, inp):
-        shp = inp.shape[2:]
-        out = torch.nn.functional.layer_norm(inp, shp)
-        return out
-
-
-class MinConv2dGRU(torch.nn.Module):
+class MinConv2dGRU(MinGRUBase):
     """A multi-layer minimal convolutional gated recurrent unit (MinGRU)."""
 
     layer_sizes: Final[tuple[int, ...]]
