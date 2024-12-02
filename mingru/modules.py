@@ -520,4 +520,41 @@ class MinConv2dGRU(MinGRUBase):
         return hs
 
 
-__all__ = ["MinGRUCell", "MinGRU", "MinConv2dGRUCell", "MinConv2dGRU"]
+class Bidirectional(MinGRUBase):
+    layer_sizes: Final[tuple[int, ...]]
+    num_layers: Final[int]
+
+    def __init__(self, rnn: MinGRUBase):
+        super().__init__()
+        self.rnn = rnn
+        self.layer_sizes = rnn.layer_sizes
+        self.num_layers = rnn.num_layers
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        h: list[torch.Tensor] | list[list[torch.Tensor]] | None = None,
+    ):
+        """Evaluate the Bidirectional GRU."""
+
+        if h is None:
+            h = self.init_hidden_state(x)
+
+        h_fwd, h_bwd = h[0], h[1]
+
+        out_fwd, h_fwd = self.rnn(x, h=h_fwd)
+        out_bwd, h_bwd = self.rnn(torch.flip(x, dims=(1,)), h=h_bwd)
+
+        return (out_fwd, out_bwd), (h_fwd, h_bwd)
+
+    def init_hidden_state(
+        self, x: torch.Tensor
+    ) -> list[torch.Tensor] | list[list[torch.Tensor]]:
+        """Initialize bidirectional hidden state"""
+        h_fwd = self.rnn.init_hidden_state(x)
+        h_bwd = self.rnn.init_hidden_state(x)
+
+        return [h_fwd, h_bwd]
+
+
+__all__ = ["MinGRUCell", "MinGRU", "MinConv2dGRUCell", "MinConv2dGRU", "Bidirectional"]
