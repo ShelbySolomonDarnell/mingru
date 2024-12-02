@@ -16,19 +16,20 @@ def test_mingruconv2dcell():
     )
 
     x = torch.randn(2, 5, 3, 32, 32)
-    h = rnn.init_hidden_state(x)
-    assert h.shape == (2, 1, 5, 32, 32)
+    h_seq = rnn.init_hidden_state(x)
+    assert h_seq.shape == (2, 1, 5, 32, 32)
 
     out_seq = []
     for i in range(x.shape[1]):
-        h = rnn(x[:, i : i + 1], h)  # NOQA
-        assert h.shape == (2, 1, 5, 32, 32)
-        out_seq.append(h)
+        out, h_seq = rnn(x[:, i : i + 1], h_seq)  # NOQA
+        assert out.shape == (2, 1, 5, 32, 32)
+        out_seq.append(h_seq)
     out_seq = torch.cat(out_seq, 1)
 
-    out_par = rnn(x, rnn.init_hidden_state(x))
+    out_par, h_par = rnn(x, rnn.init_hidden_state(x))
     assert out_par.shape == (2, 5, 5, 32, 32)
     assert torch.allclose(out_seq, out_par)
+    assert torch.allclose(h_par, h_seq)
 
 
 def test_mingruconv2dcell_downsample():
@@ -46,11 +47,11 @@ def test_mingruconv2dcell_downsample():
 
     out_seq = []
     for i in range(x.shape[1]):
-        h = rnn(x[:, i : i + 1], h)  # NOQA
-        out_seq.append(h)
+        out, h = rnn(x[:, i : i + 1], h)  # NOQA
+        out_seq.append(out)
     out_seq = torch.cat(out_seq, 1)
 
-    out_par = rnn(x, rnn.init_hidden_state(x))
+    out_par, h_par = rnn(x, rnn.init_hidden_state(x))
     assert torch.allclose(out_seq, out_par)
 
 

@@ -17,7 +17,7 @@ class MinGRUBase(torch.nn.Module, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     @torch.jit.export
-    def init_hidden_state(self, x: torch.Tensor) -> torch.Tensor:
+    def init_hidden_state(self, x: torch.Tensor) -> torch.Tensor | list[torch.Tensor]:
         """Initialize a 'zero' hidden state."""
 
 
@@ -25,6 +25,7 @@ class MinGRUCell(MinGRUBase):
     """A minimal gated recurrent unit cell."""
 
     layer_sizes: Final[tuple[int, ...]]
+    num_layers: Final[int]
 
     def __init__(
         self,
@@ -54,6 +55,7 @@ class MinGRUCell(MinGRUBase):
             **factory_kwargs,
         )
         self.layer_sizes = tuple([input_size, hidden_size])
+        self.num_layers = 1
 
     def forward(
         self,
@@ -68,7 +70,9 @@ class MinGRUCell(MinGRUBase):
                 features
 
         Returns:
-            h': (B,1,hidden_size) next hidden state
+            out: (B,S,hidden_sizes) outputs of the last layer
+            h': (B,1,hidden_size) next hidden state, corresponding
+                to last sequence element of `out`.
         """
         assert (
             x.ndim == 3 and x.shape[2] == self.layer_sizes[0]
@@ -79,8 +83,8 @@ class MinGRUCell(MinGRUBase):
 
         gate, hidden = self.to_gate_hidden(x).chunk(2, dim=2)
 
-        hnext = mF.mingru_gate_hidden(gate, hidden, h)
-        return hnext
+        out = mF.mingru_gate_hidden(gate, hidden, h)
+        return out, out[:, -1:]
 
     def init_hidden_state(self, x: torch.Tensor) -> torch.Tensor:
         """Returns a 'zero' hidden state."""
@@ -224,6 +228,7 @@ class MinConv2dGRUCell(MinGRUBase):
     """A minimal convolutional gated recurrent unit cell."""
 
     layer_sizes: Final[tuple[int, ...]]
+    num_layers: Final[int]
 
     def __init__(
         self,
@@ -267,6 +272,7 @@ class MinConv2dGRUCell(MinGRUBase):
             **factory_kwargs,
         )
         self.layer_sizes = tuple([input_size, hidden_size])
+        self.num_layers = 1
 
     def forward(
         self,
@@ -281,7 +287,9 @@ class MinConv2dGRUCell(MinGRUBase):
                 hidden state features
 
         Returns:
-            h': (B,1,hidden_size,H',W') next hidden state
+            out: (B,S,hidden_sizes,H',W') outputs of the last layer
+            h': (B,1,hidden_size,H',W') next hidden state, corresponding
+                to last element of `out`.
         """
 
         assert (
@@ -301,8 +309,8 @@ class MinConv2dGRUCell(MinGRUBase):
             .chunk(2, dim=2)
         )
 
-        hnext = mF.mingru_gate_hidden(gate, hidden, h)
-        return hnext
+        out = mF.mingru_gate_hidden(gate, hidden, h)
+        return out, out[:, -1:]
 
     def init_hidden_state(self, x: torch.Tensor) -> torch.Tensor:
         B, S = x.shape[:2]

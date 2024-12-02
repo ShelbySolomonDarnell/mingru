@@ -3,18 +3,18 @@ import io
 
 
 def assert_same_outputs(actual, expected):
-    if isinstance(expected, tuple):
-        # for non-cells
-        rnn_out, rnn_h = expected
-        scripted_out, scripted_h = actual
+    rnn_out, rnn_h = expected
+    scripted_out, scripted_h = actual
 
-        assert torch.allclose(scripted_out, rnn_out, atol=1e-4)
-        assert isinstance(scripted_h, (list, tuple))
+    assert torch.allclose(scripted_out, rnn_out, atol=1e-4)
+
+    if isinstance(rnn_h, (list, tuple)):
+        # multi-layer
         for i in range(len(rnn_h)):
             assert torch.allclose(scripted_h[i], rnn_h[i], atol=1e-4)
     else:
-        # for cells
-        assert torch.allclose(actual, expected, atol=1e-4)
+        # cell
+        assert torch.allclose(scripted_h, rnn_h, atol=1e-4)
 
 
 def assert_scriptable(rnn: torch.nn.Module, is_conv: bool):
