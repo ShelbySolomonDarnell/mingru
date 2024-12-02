@@ -25,9 +25,10 @@ def assert_scriptable(rnn: torch.nn.Module, is_conv: bool):
         x = torch.randn(1, 128, rnn.layer_sizes[0])
 
     h = rnn.init_hidden_state(x)
-
     scripted = torch.jit.script(rnn)
-    scripted_out = scripted(x, h)
+    h_scripted = rnn.init_hidden_state(x)
+
+    scripted_out = scripted(x, h_scripted)
     rnn_out = rnn(x, h)
 
     assert_same_outputs(scripted_out, rnn_out)
