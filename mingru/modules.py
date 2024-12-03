@@ -14,6 +14,7 @@ from . import functional as mF
 
 
 class MinGRUBase(torch.nn.Module, metaclass=abc.ABCMeta):
+    """Common base interface for all MinGRU implementations."""
 
     @abc.abstractmethod
     @torch.jit.export
@@ -77,12 +78,12 @@ class MinGRUCell(MinGRUBase):
 
         Params:
             x: (B,S,input_size) input features
-            h: (B,1,hidden_size) optional previous hidden state
+            h: [(B,1,hidden_size),] optional previous hidden state
                 features
 
         Returns:
             out: (B,S,hidden_sizes) outputs of the last layer
-            h': list containing single (B,1,hidden_size) next hidden state,
+            h': [(B,1,hidden_size),] next hidden state,
                 corresponding to last sequence element of `out`.
         """
         assert (
@@ -296,12 +297,12 @@ class MinConv2dGRUCell(MinGRUBase):
 
         Params:
             x: (B,S,input_size,H,W) input features
-            h: (B,1,hidden_size,H',W') optional previous
+            h: [(B,1,hidden_size,H',W'),] optional previous
                 hidden state features
 
         Returns:
             out: (B,S,hidden_sizes,H',W') outputs of the last layer
-            h': (B,1,hidden_size,H',W') next hidden state, corresponding
+            h': [(B,1,hidden_size,H',W'),] next hidden state, corresponding
                 to last element of `out`.
         """
 
