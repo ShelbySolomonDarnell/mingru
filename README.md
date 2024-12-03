@@ -20,9 +20,10 @@ Each module supports the following features (if applicable to type)
  - **Dropout**: Via parameter `dropout=`, when > 0 all inputs of each layer are effected except for the last layer.
  - **Residual**: Residual connections betweeen outputs of minGRU layers via `residual=` argument.
  - **Bias**: Biases in linear layers can be enabled and disabled via the `bias=` argument.
+ - **Bidirectional**: Bi-directional processing can be enabled by wrapping RNNs via `mingru.Bidirectional`.
  - **Normalization**: LayerNorm and GroupNorms between stacked MinGRUs via `norm=`argument.
  - **Scripting**: MinGRU is compatible with `torch.jit.script`.
- - **Compatibility**: Interface of `mingru.*` is mostly compatible with that of `torch.nn.GRU/GRUCell`, except that bi-directional and sequence-first arguments are not supported. Cells in **mingru** also support sequence arguments to benefit from parallel computation.
+ - **Compatibility**: Interface of `mingru.*` is mostly compatible with that of `torch.nn.GRU/GRUCell`, except that and sequence-first arguments are not supported and bi-directional is provided by `mingru.Bidirectional` wrapper. Cells in **mingru** also support sequence arguments to benefit from parallel computation.
 
 ## Installation
 
@@ -204,16 +205,15 @@ python -m examples.nlp train tmp/tinyshakespeare.txt
 ```shell
 python -m examples.nlp sample --num-tokens 512 tmp/tinyshakespeare.nlp_best.pt
 
-    LEONTES:
-    So must not, honesty with it, though I think thou
-    Hadst see me for an unknit. Yet'st thou
-    For being freed when was Antigon fellow
-    Is gone the obedience: rich mother: I must push
-    In that our nest till yet first shall I stand.
-
-    PAULINA:
-    Music, when she speaks,
-    No, such a guest go: thy trust not the day.
+    ISABELLA:
+    One of my sister must confess come,
+    And two spain under mine honour humbly out:
+    Yea, you'll be made in wicked Pompe. What, ho!
+    This is a gallful device shall rise.
+    I do beseech you, gentle my lord,
+    And bring him well, and nothing but my life,
+    But your beauty knows stands with your beauty,
+    In your mistress and your brother come.
     ...
 ```
 
