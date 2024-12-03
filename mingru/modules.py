@@ -560,7 +560,7 @@ class Bidirectional(MinGRUBase):
         out_fwd, h_fwd = self.rnn(x, h=h_fwd)
         out_bwd, h_bwd = self.rnn(torch.flip(x, dims=(1,)), h=h_bwd)
 
-        return torch.stack((out_fwd, out_bwd), 0), h_fwd + h_bwd
+        return torch.cat((out_fwd, out_bwd), 2), h_fwd + h_bwd
 
     def init_hidden_state(self, x: torch.Tensor) -> list[torch.Tensor]:
         """Initialize bidirectional hidden state"""
