@@ -13,10 +13,10 @@ def test_bidirectional_cell():
     assert h[1].shape == (2, 1, 5)
 
     out, h = bidir(x, h=h)
-    assert out.shape == (2, 2, 5, 5)
+    assert out.shape == (2, 5, 5 * 2)
     assert h[0].shape == (2, 1, 5)
     assert h[1].shape == (2, 1, 5)
-    assert not torch.allclose(out[0], out[1])
+    assert not torch.allclose(out[..., :5], out[..., 5:])
     assert not torch.allclose(h[0], h[1])
 
 
@@ -32,7 +32,7 @@ def test_bidirectional_stacked():
     assert h[3].shape == (4, 1, 5)
 
     out, h = bidir(x, h=h)
-    assert out.shape == (2, 4, 5, 5)
+    assert out.shape == (4, 5, 5 * 2)
     assert h[0].shape == (4, 1, 3)
     assert h[1].shape == (4, 1, 5)
     assert h[2].shape == (4, 1, 3)
