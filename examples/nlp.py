@@ -6,6 +6,7 @@ https://github.com/cheind/mingru
 
 import logging
 import warnings
+from itertools import islice
 from pathlib import Path
 
 import numpy as np
@@ -176,9 +177,6 @@ def validate(
     avg_loss = total_loss / len(dl)
 
     return acc, avg_loss
-
-
-from itertools import islice
 
 
 @torch.no_grad()
