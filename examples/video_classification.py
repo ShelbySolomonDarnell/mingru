@@ -4,18 +4,18 @@ Christoph Heind, 2024
 https://github.com/cheind/mingru
 """
 
-import warnings
 import logging
+import warnings
 from typing import Callable
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.data.dataloader
+from torchvision import tv_tensors
 from torchvision.datasets import UCF101
 from torchvision.models import VGG16_Weights, vgg16
 from torchvision.transforms import v2
-from torchvision import tv_tensors
 
 import mingru
 
