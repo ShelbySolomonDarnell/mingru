@@ -17,8 +17,19 @@ class MinGRUBase(torch.nn.Module, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     @torch.jit.export
-    def init_hidden_state(self, x: torch.Tensor) -> torch.Tensor | list[torch.Tensor]:
+    def init_hidden_state(
+        self,
+        x: torch.Tensor,
+    ) -> list[torch.Tensor]:
         """Initialize a 'zero' hidden state."""
+
+    @abc.abstractmethod
+    def forward(
+        self,
+        x: torch.Tensor,
+        h: list[torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        """Evaluate the MinGRU."""
 
 
 class MinGRUCell(MinGRUBase):
@@ -60,8 +71,8 @@ class MinGRUCell(MinGRUBase):
     def forward(
         self,
         x: torch.Tensor,
-        h: torch.Tensor | None = None,
-    ):
+        h: list[torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
         """Evaluate the MinGRU
 
         Params:
@@ -71,8 +82,8 @@ class MinGRUCell(MinGRUBase):
 
         Returns:
             out: (B,S,hidden_sizes) outputs of the last layer
-            h': (B,1,hidden_size) next hidden state, corresponding
-                to last sequence element of `out`.
+            h': list containing single (B,1,hidden_size) next hidden state,
+                corresponding to last sequence element of `out`.
         """
         assert (
             x.ndim == 3 and x.shape[2] == self.layer_sizes[0]
@@ -83,12 +94,14 @@ class MinGRUCell(MinGRUBase):
 
         gate, hidden = self.to_gate_hidden(x).chunk(2, dim=2)
 
-        out = mF.mingru_gate_hidden(gate, hidden, h)
-        return out, out[:, -1:]
+        out = mF.mingru_gate_hidden(gate, hidden, h[0])
+        return out, [out[:, -1:]]
 
-    def init_hidden_state(self, x: torch.Tensor) -> torch.Tensor:
+    def init_hidden_state(self, x: torch.Tensor) -> list[torch.Tensor]:
         """Returns a 'zero' hidden state."""
-        return mF.g(x.new_zeros(x.shape[0], 1, self.layer_sizes[-1]))
+        return [
+            mF.g(x.new_zeros(x.shape[0], 1, self.layer_sizes[-1])),
+        ]
 
 
 class MinGRU(MinGRUBase):
@@ -176,7 +189,7 @@ class MinGRU(MinGRUBase):
         self,
         x: torch.Tensor,
         h: list[torch.Tensor] | None = None,
-    ):
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
         """Evaluate the MinGRU.
 
         Params:
@@ -216,7 +229,7 @@ class MinGRU(MinGRUBase):
 
         return out, next_hidden
 
-    def init_hidden_state(self, x):
+    def init_hidden_state(self, x: torch.Tensor) -> list[torch.Tensor]:
         """Returns a list of 'zero' hidden states for each layer."""
         return [
             mF.g(x.new_zeros(x.shape[0], 1, hidden_size))
@@ -277,8 +290,8 @@ class MinConv2dGRUCell(MinGRUBase):
     def forward(
         self,
         x: torch.Tensor,
-        h: torch.Tensor | None = None,
-    ):
+        h: list[torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
         """Evaluate the convolutional MinGRU
 
         Params:
@@ -309,10 +322,10 @@ class MinConv2dGRUCell(MinGRUBase):
             .chunk(2, dim=2)
         )
 
-        out = mF.mingru_gate_hidden(gate, hidden, h)
-        return out, out[:, -1:]
+        out = mF.mingru_gate_hidden(gate, hidden, h[0])
+        return out, [out[:, -1:]]
 
-    def init_hidden_state(self, x: torch.Tensor) -> torch.Tensor:
+    def init_hidden_state(self, x: torch.Tensor) -> list[torch.Tensor]:
         B, S = x.shape[:2]
         with torch.no_grad():
             H, W = (
@@ -322,7 +335,9 @@ class MinConv2dGRUCell(MinGRUBase):
                 .unflatten(0, (1, 1))
                 .shape[3:]
             )
-        return mF.g(x.new_zeros(x.shape[0], 1, self.layer_sizes[-1], H, W))
+        return [
+            mF.g(x.new_zeros(x.shape[0], 1, self.layer_sizes[-1], H, W)),
+        ]
 
 
 class MinConv2dGRU(MinGRUBase):
@@ -446,7 +461,7 @@ class MinConv2dGRU(MinGRUBase):
         self,
         x: torch.Tensor,
         h: list[torch.Tensor] | None = None,
-    ):
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
         """Evaluate the MinGRU.
 
         Params:
@@ -533,28 +548,25 @@ class Bidirectional(MinGRUBase):
     def forward(
         self,
         x: torch.Tensor,
-        h: list[torch.Tensor] | list[list[torch.Tensor]] | None = None,
-    ):
+        h: list[torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
         """Evaluate the Bidirectional GRU."""
 
         if h is None:
             h = self.init_hidden_state(x)
 
-        h_fwd, h_bwd = h[0], h[1]
+        h_fwd, h_bwd = h[: self.num_layers], h[self.num_layers :]
 
         out_fwd, h_fwd = self.rnn(x, h=h_fwd)
         out_bwd, h_bwd = self.rnn(torch.flip(x, dims=(1,)), h=h_bwd)
 
-        return (out_fwd, out_bwd), (h_fwd, h_bwd)
+        return torch.stack((out_fwd, out_bwd), 0), h_fwd + h_bwd
 
-    def init_hidden_state(
-        self, x: torch.Tensor
-    ) -> list[torch.Tensor] | list[list[torch.Tensor]]:
+    def init_hidden_state(self, x: torch.Tensor) -> list[torch.Tensor]:
         """Initialize bidirectional hidden state"""
         h_fwd = self.rnn.init_hidden_state(x)
         h_bwd = self.rnn.init_hidden_state(x)
-
-        return [h_fwd, h_bwd]
+        return h_fwd + h_bwd
 
 
 __all__ = ["MinGRUCell", "MinGRU", "MinConv2dGRUCell", "MinConv2dGRU", "Bidirectional"]

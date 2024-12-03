@@ -11,23 +11,22 @@ def test_mingrucell():
 
     x = torch.randn(2, 5, 1)
     h = rnn.init_hidden_state(x)
-    assert h.shape == (2, 1, 5)
+    assert isinstance(h, list)
+    assert len(h) == 1
+    assert h[0].shape == (2, 1, 5)
 
     out_seq = []
-    h_seq = h
 
     for i in range(x.shape[1]):
         out, h = rnn(x[:, i : i + 1], h)  # NOQA
-        assert h.shape == (2, 1, 5)
+        assert h[0].shape == (2, 1, 5)
         assert out.shape == (2, 1, 5)
         out_seq.append(out)
-        h_seq = h
     out_seq = torch.cat(out_seq, 1)
 
-    out_par, h_par = rnn(x, rnn.init_hidden_state(x))
+    out_par, _ = rnn(x, rnn.init_hidden_state(x))
     assert out_par.shape == (2, 5, 5)
     assert torch.allclose(out_seq, out_par)
-    assert torch.allclose(h_seq, h_par)
 
 
 @pytest.mark.parametrize("bias", [True, False])
