@@ -510,6 +510,8 @@ class MinConv2dGRU(MinGRUBase):
 
         return out, next_hidden
 
+    torch.no_grad()
+
     def init_hidden_state(self, x: torch.Tensor) -> list[torch.Tensor]:
         hs = []
         B = x.shape[0]
@@ -517,21 +519,21 @@ class MinConv2dGRU(MinGRUBase):
         # fiddling with spatial dimension computation. This just uses
         # the first sequence element from the first batch todo so, and hence
         # should not lead to major performance impact.
-        with torch.no_grad():
-            # Cannot make the following a reusable function because
-            # nn.Modules are not accepted as parameters in scripting...
-            for lidx, layer in enumerate(self.layers):
-                y, _ = (
-                    layer.gate_hidden(x[:1, :1].flatten(0, 1))
-                    .unflatten(
-                        0,
-                        (1, 1),
-                    )
-                    .chunk(2, dim=2)
+
+        # Cannot make the following a reusable function because
+        # nn.Modules are not accepted as parameters in scripting...
+        for layer in self.layers:
+            y, _ = (
+                layer.gate_hidden(x[:1, :1].flatten(0, 1))
+                .unflatten(
+                    0,
+                    (1, 1),
                 )
-                h = mF.g(y.new_zeros(B, 1, y.shape[2], y.shape[3], y.shape[4]))
-                hs.append(h)
-                x = y
+                .chunk(2, dim=2)
+            )
+            h = mF.g(y.new_zeros(B, 1, y.shape[2], y.shape[3], y.shape[4]))
+            hs.append(h)
+            x = y
         return hs
 
 
