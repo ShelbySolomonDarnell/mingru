@@ -97,29 +97,35 @@ class UCF101Classifier(torch.nn.Module):
     def __init__(self, cfg):
         super().__init__()
         parts = [0, 5, 10, 17, 24, 31]
+        output_sizes = [64, 128, 256, 512, 512]
         backbone = vgg16(weights=VGG16_Weights.IMAGENET1K_V1).features
         self.feature_parts = torch.nn.ModuleList(
             [backbone[f:t] for f, t in zip(parts[:-1], parts[1:])]
         )
 
-        self.rnns = torch.nn.ModuleList(
-            [
-                mingru.MinConv2dGRU(
-                    input_size=s,
-                    hidden_sizes=[s, s],
-                    kernel_sizes=3,
-                    strides=2,
-                    paddings=1,
-                    dropout=cfg["dropout"],
-                    norm=cfg["norm"],
-                    residual=True,
-                    bias=True,
-                )
-                for s in [64, 128, 256, 512, 512]
-            ]
-        )
+        rnns = [
+            mingru.MinConv2dGRU(
+                input_size=s,
+                hidden_sizes=[s, s],
+                kernel_sizes=3,
+                strides=2,
+                paddings=1,
+                dropout=cfg["dropout"],
+                norm=cfg["norm"],
+                residual=True,
+                bias=True,
+            )
+            for s in output_sizes
+        ]
+        if cfg["bidirectional"]:
+            rnns = [mingru.Bidirectional(rnn) for rnn in rnns]
 
-        self.fc = torch.nn.Linear(sum([64, 128, 256, 512, 512]) * 2 * 2, 101)
+        self.rnns = torch.nn.ModuleList(rnns)
+
+        # classifier head
+        d = 2 if cfg["bidirectional"] else 1
+        h, w = 2, 2
+        self.fc = torch.nn.Linear(sum(output_sizes) * h * w * d, 101)
 
     def forward(self, video):
         B, S = video.shape[:2]
@@ -144,8 +150,6 @@ def train(cfg):
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     classifier = UCF101Classifier(cfg).to(dev)
-
-    classifier(torch.randn(1, 10, 3, 224, 224).to(dev))
 
     transform = get_train_transform()
     fold = cfg["ucf101_fold"]
@@ -193,7 +197,7 @@ def train(cfg):
                 _logger.info(
                     f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, Accuracy: {accuracy:.2f}%"
                 )
-            if (step + 1) % 500 == 0:
+            if (step + 1) % 400 == 0:
                 val_acc, val_loss = validate(classifier, dev, dl_val)
                 _logger.info(
                     f"Epoch {epoch+1}, Step {step+1}, Validation Accuracy: {val_acc*100:.2f}%, Validation Loss: {val_loss:.2f}"
@@ -302,8 +306,8 @@ def quick_test(cfg, classifier):
 
 if __name__ == "__main__":
 
-    import os
     import argparse
+    import os
 
     logging.basicConfig(
         level=logging.INFO,
@@ -320,11 +324,11 @@ if __name__ == "__main__":
         "ucf101_fold": 1,
         "ucf101_workers": 10,
         "dl_workers": 4,
-        "hidden_sizes": [64, 128, 256, 256, 512],
+        "bidirectional": True,
         "norm": True,
         "dropout": 0.15,
         "num_epochs": 7,
-        "batch_size": 16,
+        "batch_size": 8,
         "lr": 1e-4,
     }
 
