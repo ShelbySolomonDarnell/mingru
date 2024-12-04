@@ -326,6 +326,7 @@ class MinConv2dGRUCell(MinGRUBase):
         out = mF.mingru_gate_hidden(gate, hidden, h[0])
         return out, [out[:, -1:]]
 
+    @torch.no_grad()
     def init_hidden_state(self, x: torch.Tensor) -> list[torch.Tensor]:
         B, S = x.shape[:2]
         with torch.no_grad():
@@ -511,8 +512,7 @@ class MinConv2dGRU(MinGRUBase):
 
         return out, next_hidden
 
-    torch.no_grad()
-
+    @torch.no_grad()
     def init_hidden_state(self, x: torch.Tensor) -> list[torch.Tensor]:
         hs = []
         B = x.shape[0]
