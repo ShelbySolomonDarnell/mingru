@@ -232,6 +232,7 @@ class MinGRU(MinGRUBase):
 
     def init_hidden_state(self, x: torch.Tensor) -> list[torch.Tensor]:
         """Returns a list of 'zero' hidden states for each layer."""
+
         return [
             mF.g(x.new_zeros(x.shape[0], 1, hidden_size))
             for hidden_size in self.layer_sizes[1:]
@@ -326,7 +327,6 @@ class MinConv2dGRUCell(MinGRUBase):
         out = mF.mingru_gate_hidden(gate, hidden, h[0])
         return out, [out[:, -1:]]
 
-    @torch.no_grad()
     def init_hidden_state(self, x: torch.Tensor) -> list[torch.Tensor]:
         B, S = x.shape[:2]
         with torch.no_grad():
@@ -337,9 +337,9 @@ class MinConv2dGRUCell(MinGRUBase):
                 .unflatten(0, (1, 1))
                 .shape[3:]
             )
-        return [
-            mF.g(x.new_zeros(x.shape[0], 1, self.layer_sizes[-1], H, W)),
-        ]
+            return [
+                mF.g(x.new_zeros(x.shape[0], 1, self.layer_sizes[-1], H, W)),
+            ]
 
 
 class MinConv2dGRU(MinGRUBase):
@@ -512,7 +512,6 @@ class MinConv2dGRU(MinGRUBase):
 
         return out, next_hidden
 
-    @torch.no_grad()
     def init_hidden_state(self, x: torch.Tensor) -> list[torch.Tensor]:
         hs = []
         B = x.shape[0]
@@ -523,18 +522,19 @@ class MinConv2dGRU(MinGRUBase):
 
         # Cannot make the following a reusable function because
         # nn.Modules are not accepted as parameters in scripting...
-        for layer in self.layers:
-            y, _ = (
-                layer.gate_hidden(x[:1, :1].flatten(0, 1))
-                .unflatten(
-                    0,
-                    (1, 1),
+        with torch.no_grad():
+            for layer in self.layers:
+                y, _ = (
+                    layer.gate_hidden(x[:1, :1].flatten(0, 1))
+                    .unflatten(
+                        0,
+                        (1, 1),
+                    )
+                    .chunk(2, dim=2)
                 )
-                .chunk(2, dim=2)
-            )
-            h = mF.g(y.new_zeros(B, 1, y.shape[2], y.shape[3], y.shape[4]))
-            hs.append(h)
-            x = y
+                h = mF.g(y.new_zeros(B, 1, y.shape[2], y.shape[3], y.shape[4]))
+                hs.append(h)
+                x = y
         return hs
 
 
