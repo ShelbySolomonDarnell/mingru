@@ -157,7 +157,7 @@ Trains a video classification network using convolutional MinGRUs from scratch u
 
 > Ballas, Nicolas, Li Yao1 Chris Pal, and Aaron Courville. "Delving deeper into convolution networks for learning video representation." (2015).
 
-On fold 1 this achieves a validation top-1 accuracy 98% and 70% on test. This is quite expected given that pretraining was done on ImageNet and UCF101 is prone to overfit. One can expect better test results when pretraining is done on larger video action datasets.
+On fold 1 this achieves a validation top-1 accuracy 95% and 78% on test, which replicates the results from the paper. The architecture uses a VGG16 backbone trained on ImageNet. One can expect better test results when pre-training is done on larger video action datasets.
 
 First, register these environment variables
 
