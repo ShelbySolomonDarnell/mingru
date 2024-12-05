@@ -34,7 +34,7 @@ def get_train_transform():
     return v2.Compose(
         [
             ToVideo(),
-            v2.RandomPerspective(distortion_scale=0.2),
+            # v2.RandomPerspective(distortion_scale=0.2),
             v2.RandomChoice(
                 [v2.RandomResizedCrop(224, scale=(0.3, 1.0)), v2.RandomCrop(224)]
             ),
@@ -82,7 +82,53 @@ def get_dataset(cfg, train: bool, fold: int, transform: Callable):
         transform=transform,
     )
 
-    return ds
+    # Compute video index for each dataset index
+    idx2video = np.array(
+        [ds.video_clips.get_clip_location(idx)[0] for idx in range(len(ds))]
+    )
+    video2label = np.array(
+        [ds.samples[ds.indices[vidx]][1] for vidx in np.unique(idx2video)]
+    )
+
+    return ds, idx2video, video2label
+
+
+def split_train_val(
+    ds: UCF101,
+    idx2video: np.ndarray,
+    video2label: np.ndarray,
+    video_split_ratio: float = 0.95,
+    max_val_clips_per_video: int = 1,
+):
+    """Splits training set into training and validation on a per-video basis.
+
+    To avoid overfitting on UCF101 we found it important to split train/val
+    not based on clips, but on a per video basis. This improves accuracy
+    for the base model by 8% on test fold 1.
+    """
+
+    idx_train = []
+    idx_val = []
+
+    for i in range(101):
+        videos = np.where(video2label == i)[0]
+        videos = np.random.permutation(videos)
+        r = min(int(len(videos) * video_split_ratio), len(videos) - 2)
+        train_video_idx = videos[:r]
+        val_video_idx = videos[r:]
+        train_clip_idx = np.concatenate(
+            [np.where(idx2video == v)[0] for v in train_video_idx]
+        )
+        val_clip_idx = np.concatenate(
+            [np.where(idx2video == v)[0] for v in val_video_idx]
+        )
+        idx_train.extend(train_clip_idx.tolist())
+        idx_val.extend(val_clip_idx[:max_val_clips_per_video].tolist())
+
+    ds_train = torch.utils.data.Subset(ds, idx_train)
+    ds_val = torch.utils.data.Subset(ds, idx_val)
+
+    return ds_train, ds_val
 
 
 def custom_collate(batch):
@@ -92,7 +138,7 @@ def custom_collate(batch):
     return torch.utils.data.dataloader.default_collate(filtered_batch)
 
 
-# fold1: 98% top1 on val, 70% on test split
+# fold1: 96% top1 on val, 78% on test split
 class UCF101Classifier(torch.nn.Module):
     def __init__(self, cfg):
         super().__init__()
@@ -120,12 +166,14 @@ class UCF101Classifier(torch.nn.Module):
         if cfg["bidirectional"]:
             rnns = [mingru.Bidirectional(rnn) for rnn in rnns]
 
-        self.rnns = torch.nn.ModuleList(rnns)
-
-        # classifier head
         d = 2 if cfg["bidirectional"] else 1
         h, w = 2, 2
-        self.fc = torch.nn.Linear(sum(output_sizes) * h * w * d, 101)
+        mult = h * w * d
+        fcs = [torch.nn.Linear(s * mult, 101) for s in output_sizes]
+
+        self.heads = torch.nn.ModuleList(
+            [torch.nn.ModuleDict({"rnn": rnn, "fc": fc}) for rnn, fc in zip(rnns, fcs)]
+        )
 
     def forward(self, video):
         B, S = video.shape[:2]
@@ -136,14 +184,15 @@ class UCF101Classifier(torch.nn.Module):
             x = part(x)
             features.append(x.unflatten(0, (B, S)))
 
-        outs = []
-        for idx, rnn in enumerate(self.rnns):
-            out, _ = rnn(features[idx])
-            outs.append(out)
+        logits = []
+        for idx, head in enumerate(self.heads):
+            out, _ = head.rnn(features[idx])
+            out = F.adaptive_avg_pool2d(out[:, -1], (2, 2))
+            logits.append(head.fc(out.flatten(1)))
 
-        outs_pooled = [F.adaptive_avg_pool2d(out[:, -1], (2, 2)) for out in outs]
-        outs_pooled = torch.cat(outs_pooled, 1).flatten(1)
-        return self.fc(outs_pooled), None
+        logits = torch.stack(logits)
+        logits = logits.mean(0)
+        return logits, None
 
 
 def train(cfg):
@@ -153,11 +202,18 @@ def train(cfg):
 
     transform = get_train_transform()
     fold = cfg["ucf101_fold"]
-    ds = get_dataset(cfg, train=True, fold=fold, transform=transform)
+    ds, idx2video, video2label = get_dataset(
+        cfg, train=True, fold=fold, transform=transform
+    )
 
-    indices = np.random.permutation(len(ds))
-    ds_train = torch.utils.data.Subset(ds, indices[:-200])
-    ds_val = torch.utils.data.Subset(ds, indices[-200:])
+    ds_train, ds_val = split_train_val(
+        ds,
+        idx2video,
+        video2label,
+        video_split_ratio=0.95,
+        max_val_clips_per_video=2,
+    )
+    _logger.info(f"Train DS: {len(ds_train)}, Val DS: {len(ds_val)}")
 
     dl_train = torch.utils.data.DataLoader(
         ds_train,
@@ -204,7 +260,7 @@ def train(cfg):
                 )
                 if val_acc > best_acc or (val_acc == best_acc and val_loss < best_loss):
                     scripted = torch.jit.script(classifier)
-                    torch.jit.save(scripted, "tmp/video_classifier_best.pt")
+                    torch.jit.save(scripted, f"tmp/video_classifier_best_{step:04d}.pt")
                     _logger.info("New best model")
                     best_acc = val_acc
                     best_loss = val_loss
@@ -243,13 +299,21 @@ def validate(classifier: torch.nn.Module, dev: torch.device, dl, verbose: bool =
 
 @torch.no_grad()
 def test(cfg, classifier):
-    # From each of these selected sub-volumes, we obtain 10 inputs for our model, i.e. 4
-    # corners, 1 center, and their horizontal flipping. The final pre- diction score
-    # is obtained by averaging across the sampled sub-volumes and their cropped regions.
+    """Test classifier
+
+    Follows the test protocol of
+    https://arxiv.org/pdf/1511.06432
+
+    For each video we randomly choose 25 clips of length 10. For each image of each clip
+    we obtain 10 inputs: five-crops plus horizontal flipping. The final pre-dection for
+    a video is then computed as the majority vote of 25*10*10 predictions (in the original
+    paper averaging is used instead). Note that for the base classifier, predicition
+    averaging is already applied for each of the 5 feature resolutions.
+    """
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     classifier.eval()
 
-    ds = get_dataset(cfg, train=False, transform=None, fold=cfg["ucf101_fold"])
+    ds, _, _ = get_dataset(cfg, train=False, transform=None, fold=cfg["ucf101_fold"])
     trans = get_test_transform()
 
     total = 0
@@ -292,7 +356,7 @@ def quick_test(cfg, classifier):
     classifier.eval()
 
     trans = get_quick_test_transform()
-    ds = get_dataset(cfg, train=False, transform=trans, fold=cfg["ucf101_fold"])
+    ds, _, _ = get_dataset(cfg, train=False, transform=trans, fold=cfg["ucf101_fold"])
     dl = torch.utils.data.DataLoader(
         ds,
         batch_size=cfg["batch_size"],
@@ -324,11 +388,11 @@ if __name__ == "__main__":
         "ucf101_fold": 1,
         "ucf101_workers": 10,
         "dl_workers": 4,
-        "bidirectional": True,
+        "bidirectional": False,
         "norm": True,
         "dropout": 0.15,
         "num_epochs": 7,
-        "batch_size": 8,
+        "batch_size": 16,
         "lr": 1e-4,
     }
 
