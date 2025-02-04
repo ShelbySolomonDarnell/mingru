@@ -9,11 +9,16 @@ import warnings
 from itertools import islice
 from pathlib import Path
 
+import wandb
 import numpy as np
 import tiktoken
 import torch
+import torcheval
+import torchvision
 import torch.nn.functional as F
 import torch.utils.data.dataloader
+from torcheval.metrics.text import Perplexity
+from examples.utils import *
 
 import mingru
 
@@ -112,6 +117,26 @@ def train(cfg):
 
     best_acc = 0
     for epoch in range(cfg["num_epochs"]):
+        if cfg["wandb"]:
+            wandb.init(
+                # Set the project where this run will be logged
+                project="minGRU Shakespeare training tests",
+                name=f"epoch_{epoch}",
+                # Track hyper parameters and run metadata
+                config={
+                    "learning_rate": cfg["lr"],
+                    "batch_size": cfg["batch_size"],
+                    "dropout": cfg["dropout"],
+                    "architecture": "minGRU",
+                    "dataset": "tiny-shakespeare",
+                    "epochs": cfg["num_epochs"],
+                    "sequence_length": cfg["seqlen"],
+                    "vocabulary_size": cfg["vocab_size"],
+                    "embedding_sizes": cfg["emb_size"],
+                    "normalize": cfg["norm"],
+                    "hidden_sizes": cfg["hidden_sizes"]
+                }
+            )
         for step, (x, y) in enumerate(dl_train):
             x = x.to(dev)
             y = y.to(dev)
@@ -121,9 +146,12 @@ def train(cfg):
             loss.backward()
             opt.step()
             if (step + 1) % 20 == 0:
-                _logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}")
+                perplexed = torch.exp(loss)
+                _logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, perplexity: {perplexed:.4f}")
+                wandb.log({"step":step+1, "loss":loss, "perplexity":perplexed}) if cfg["wandb"] else None
             if (step + 1) % 400 == 0:
                 val_acc, val_loss = validate(model, dev, ds_val)
+                wandb.log({"step": step+1, "validation_accuracy": val_acc*100, "validation_loss": val_loss}) if cfg["wandb"] else None
                 _logger.info(
                     f"Epoch {epoch+1}, Step {step+1}, Validation Accuracy: {val_acc*100:.2f}%, Validation Loss: {val_loss:.2f}"
                 )
@@ -141,6 +169,7 @@ def train(cfg):
                 model.train()
 
         sched.step()
+    wandb.finish() if cfg["wandb"] else None
 
 
 @torch.no_grad()
@@ -188,6 +217,7 @@ def generate_text(
     temperature: float = 1.0,
     top_k: int = None,
 ) -> str:
+    #perplexed = Perplexity()
     enc = tiktoken.get_encoding("gpt2")
     ids = (
         torch.tensor(
@@ -203,7 +233,12 @@ def generate_text(
         temperature=temperature,
         top_k=top_k,
     )
+    #new = torch_cat_with_check(list(islice(gen, num_tokens)), dim=1)
     new = torch.cat(list(islice(gen, num_tokens)), dim=1)
+    #perplexed.update(ids.squeeze(0), new)
+    #perplexed.compute()
+    #_logger.info(f"Perplexity: {perplexed}")
+    #wandb.log({"perplexity":perplexed})
     return enc.decode(new[0].cpu().tolist())
 
 
@@ -219,8 +254,13 @@ def generate_tokens(model, prefix_ids, temperature=1.0, top_k=None):
         if top_k is not None:
             v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
             logits[logits < v[:, [-1]]] = -float("Inf")
+            _logger.info(f"v: {v}, top_k: {top_k}")
         probs = F.softmax(logits, dim=-1)
+        #new_probs = [the_prob for the_prob in probs if the_prob != 0]
+        #_logger.info(f"Probs: {probs}")
         idx_next = torch.multinomial(probs, num_samples=1)
+        #_logger.info(f"Size of probs {probs.shape}")
+        #_logger.info(f"Size of idx_next {idx_next.shape}")
         yield idx_next
         inp = idx_next
 
@@ -254,7 +294,7 @@ if __name__ == "__main__":
         "hidden_sizes": [64, 128, 256, 256, 512],
         "norm": True,
         "dropout": 0.15,
-        "num_epochs": 7,
+        "num_epochs": 10,
         "batch_size": 64,
         "lr": 1e-3,
     }
@@ -263,9 +303,11 @@ if __name__ == "__main__":
     subparsers = parser.add_subparsers(dest="cmd")
     train_parser = subparsers.add_parser("train", help="train")
     train_parser.add_argument("textfile", help="Path to text file to train on.")
+    train_parser.add_argument("--wandb", type=bool, default=False)
     sample_parser = subparsers.add_parser("sample", help="sample")
     sample_parser.add_argument("--precond", help="preconditioning text", default="\n")
     sample_parser.add_argument("--num-tokens", type=int, default=256)
+    sample_parser.add_argument("--wandb", type=bool, default=False)
     sample_parser.add_argument("ckpt")
     args = parser.parse_args()
 
