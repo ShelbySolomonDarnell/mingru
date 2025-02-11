@@ -141,15 +141,29 @@ def train(cfg):
                     "hidden_sizes": cfg["hidden_sizes"]
                 }
             )
+        detached_hidden_state = None
         for step, (x, y) in enumerate(dl_train):
             x = x.to(dev)
             y = y.to(dev)
-            y_hat, _ = model.forward(x)
+            #if detached_hidden_state != None:
+            #    _logger.info(f"hidden state will be moved forward, its length is {len(detached_hidden_state)}" )
+            y_hat, hidden_state = model.forward(x, detached_hidden_state)
+            ndx = 0
+            detached_hidden_state = []
+            for the_state in hidden_state:
+                #print( "State {0} is {1}".format(ndx, the_state) )
+                detached_hidden_state.append(the_state.detach().clone())
+                ndx += 1
+
+
+            #y_hat, hidden_state = model.forward(x)
+
             loss = crit(y_hat.permute(0, 2, 1), y)
             opt.zero_grad()
             loss.backward()
             opt.step()
             if (step + 1) % 20 == 0:
+            #if (step + 1) % 50 == 0:
                 perplexed = torch.exp(loss)
                 _logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, perplexity: {perplexed:.4f}")
                 wandb.log({"step":step+1, "loss":loss, "perplexity":perplexed}) if cfg["wandb"] else None
@@ -296,10 +310,10 @@ if __name__ == "__main__":
         "vocab_size": 50257,
         "emb_size": 768,
         "hidden_sizes": [512, 1024, 2048, 4096, 8192],
-        #"hidden_sizes": [1024, 2048, 4096, 8192],
+        #"hidden_sizes": [512, 1024, 2048, 4096, 8192],
         "norm": True,
         "dropout": 0.15,
-        "num_epochs": 28,
+        "num_epochs": 3,
         "batch_size": 64,
         "lr": 1e-3,
     }
