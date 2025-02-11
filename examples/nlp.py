@@ -97,6 +97,9 @@ def train(cfg):
         num_workers=0,
     )
 
+    _logger.info(f"Number of examples in dataset {len(dl_train.dataset)}")
+    _logger.info(f"Number of batches in dataset {len(dl_train)}")
+
     ds_val = torch.utils.data.Subset(
         ds_val, np.random.choice(len(ds_val), 256, replace=False)
     )
@@ -120,8 +123,9 @@ def train(cfg):
         if cfg["wandb"]:
             wandb.init(
                 # Set the project where this run will be logged
-                project="minGRU Shakespeare training tests",
-                name=f"epoch_{epoch}",
+                project="minGRU Shakespeare training",
+                #name=f"epoch_{epoch}",
+                name=f"minGRU epochs {cfg['num_epochs']}, hidden_sizes {cfg['hidden_sizes']}",
                 # Track hyper parameters and run metadata
                 config={
                     "learning_rate": cfg["lr"],
@@ -254,7 +258,7 @@ def generate_tokens(model, prefix_ids, temperature=1.0, top_k=None):
         if top_k is not None:
             v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
             logits[logits < v[:, [-1]]] = -float("Inf")
-            _logger.info(f"v: {v}, top_k: {top_k}")
+            #_logger.info(f"v: {v}, top_k: {top_k}")
         probs = F.softmax(logits, dim=-1)
         #new_probs = [the_prob for the_prob in probs if the_prob != 0]
         #_logger.info(f"Probs: {probs}")
@@ -291,10 +295,11 @@ if __name__ == "__main__":
         "seqlen": 256,
         "vocab_size": 50257,
         "emb_size": 768,
-        "hidden_sizes": [64, 128, 256, 256, 512],
+        "hidden_sizes": [512, 1024, 2048, 4096, 8192],
+        #"hidden_sizes": [1024, 2048, 4096, 8192],
         "norm": True,
         "dropout": 0.15,
-        "num_epochs": 10,
+        "num_epochs": 28,
         "batch_size": 64,
         "lr": 1e-3,
     }
