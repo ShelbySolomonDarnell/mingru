@@ -119,6 +119,7 @@ def train(cfg):
     )
 
     best_acc = 0
+    detached_hidden_state = []
     for epoch in range(cfg["num_epochs"]):
         if cfg["wandb"]:
             wandb.init(
@@ -147,7 +148,7 @@ def train(cfg):
             y = y.to(dev)
             #if detached_hidden_state != None:
             #    _logger.info(f"hidden state will be moved forward, its length is {len(detached_hidden_state)}" )
-            y_hat, hidden_state = model.forward(x, detached_hidden_state)
+            y_hat, hidden_state = model.forward(x, detached_hidden_state if detached_hidden_state != [] else None)
             ndx = 0
             detached_hidden_state = []
             for the_state in hidden_state:
