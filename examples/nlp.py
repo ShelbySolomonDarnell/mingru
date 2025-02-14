@@ -9,6 +9,7 @@ import warnings
 from itertools import islice
 from pathlib import Path
 
+import json
 import wandb
 import numpy as np
 import tiktoken
@@ -19,6 +20,7 @@ import torch.nn.functional as F
 import torch.utils.data.dataloader
 from torcheval.metrics.text import Perplexity
 from examples.utils import *
+from examples.utils import cfg as _cfg
 
 import mingru
 
@@ -84,6 +86,22 @@ class NLPModel(torch.nn.Module):
         logits = self.fc(x)
         return logits, h
 
+def init_optimizer(params, the_cfg):
+    result = None
+    if the_cfg["optim"] == "sgd":
+        result = torch.optim.SGD(
+            params,
+            lr=cfg["lr"],
+            momentum=0.9,
+            weight_decay=5e-4
+        )
+    else:
+        result = torch.optim.Adam(
+            params,
+            lr=cfg["lr"],
+            weight_decay=5e-4,
+    )
+    return result
 
 def train(cfg):
 
@@ -107,11 +125,8 @@ def train(cfg):
     model = NLPModel(cfg).to(dev)
 
     crit = torch.nn.CrossEntropyLoss(ignore_index=-1)
-    opt = torch.optim.Adam(
-        model.parameters(),
-        lr=cfg["lr"],
-        weight_decay=5e-4,
-    )
+    opt = init_optimizer(model.parameters(),cfg)
+
     sched = torch.optim.lr_scheduler.StepLR(
         opt,
         cfg["num_epochs"] - 2,
@@ -127,17 +142,17 @@ def train(cfg):
             name=f"minGRU epochs {cfg['num_epochs']}, hidden_sizes {cfg['hidden_sizes']}",
             # Track hyper parameters and run metadata
             config={
-                "learning_rate": cfg["lr"],
-                "batch_size": cfg["batch_size"],
-                "dropout": cfg["dropout"],
-                "architecture": "minGRU",
-                "dataset": "tiny-shakespeare",
-                "epochs": cfg["num_epochs"],
-                "sequence_length": cfg["seqlen"],
-                "vocabulary_size": cfg["vocab_size"],
-                "embedding_sizes": cfg["emb_size"],
-                "normalize": cfg["norm"],
-                "hidden_sizes": cfg["hidden_sizes"]
+                "learning_rate":   _cfg.get("MAIN","lr"),
+                "batch_size":      _cfg.get("MAIN","batch_size"), #cfg["batch_size"],
+                "dropout":         _cfg.get("MAIN","dropout"), #cfg["dropout"],
+                "architecture":    _cfg.get("MAIN", "arch_gru"), #"minGRU",
+                "dataset":         _cfg.get("MAIN","datasetA"), #"tiny-shakespeare",
+                "epochs":          _cfg.get("MAIN","num_epochs"), #cfg["num_epochs"],
+                "sequence_length": _cfg.get("MAIN", "seqlen"), #cfg["seqlen"],
+                "vocabulary_size": _cfg.get("MAIN", "vocab_size"), #cfg["vocab_size"],
+                "embedding_sizes": _cfg.get("MAIN", "emb_size"), #cfg["emb_size"],
+                "normalize":       _cfg.get("MAIN", "norm"), #cfg["norm"],
+                "hidden_sizes":    _cfg.get("MAIN", "hidden_sizes") #cfg["hidden_sizes"]
             }
         )
     detached_hidden_state = []
@@ -156,7 +171,7 @@ def train(cfg):
             else: 
                 detached_hidden_state = detach_tensors_in_list(hidden_state)
             """
-            if (step % 775) == 0:
+            if (step % (len(dl_train)-1)) == 0:
                 detached_hidden_state = None
             y_hat, hidden_state = model.forward(x, detached_hidden_state if detached_hidden_state != [] else None)
             detached_hidden_state = detach_tensors_in_list(hidden_state)
@@ -303,22 +318,23 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s: %(message)s",
         handlers=[
-            logging.FileHandler("tmp/nlp.log.txt", mode="a"),
+            logging.FileHandler("tmp/nlp-boros.log.txt", mode="a"),
             logging.StreamHandler(),
         ],
     )
 
     cfg = {
-        "seqlen": 256,
-        "vocab_size": 50257,
-        "emb_size": 768,
-        "hidden_sizes": [512, 1024, 2048, 4096],
-        #"hidden_sizes": [512, 1024, 2048, 4096, 8192],
-        "norm": True,
-        "dropout": 0.15,
-        "num_epochs": 3,
-        "batch_size": 64,
-        "lr": 1e-3,
+        "dataset":      _cfg.get("MAIN","datasetA"), #"tiny-shakespeare",
+        "architecture": _cfg.get("MAIN", "arch_gru"), #"minGRU",
+        "lr":           _cfg.getfloat("MAIN","lr"),
+        "batch_size":   _cfg.getint("MAIN","batch_size"), #cfg["batch_size"],
+        "num_epochs":   _cfg.getint("MAIN","num_epochs"), #cfg["num_epochs"],
+        "dropout":      _cfg.getfloat("MAIN","dropout"), #cfg["dropout"],
+        "norm":         _cfg.getboolean("MAIN", "norm"), #cfg["norm"],
+        "hidden_sizes": json.loads(_cfg.get("MAIN", "hidden_sizes")), #cfg["hidden_sizes"]
+        "emb_size":     _cfg.getint("MAIN", "emb_size"), #cfg["emb_size"],
+        "vocab_size":   _cfg.getint("MAIN", "vocab_size"), #cfg["vocab_size"],
+        "seqlen":       _cfg.getint("MAIN", "seqlen") #cfg["seqlen"],
     }
 
     parser = argparse.ArgumentParser()
@@ -326,6 +342,7 @@ if __name__ == "__main__":
     train_parser = subparsers.add_parser("train", help="train")
     train_parser.add_argument("textfile", help="Path to text file to train on.")
     train_parser.add_argument("--wandb", type=bool, default=False)
+    train_parser.add_argument("--optim", type=str, default="adamw")
     sample_parser = subparsers.add_parser("sample", help="sample")
     sample_parser.add_argument("--precond", help="preconditioning text", default="\n")
     sample_parser.add_argument("--num-tokens", type=int, default=256)

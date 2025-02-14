@@ -12,12 +12,12 @@ from collections.abc import Sequence
 """
 logging.basicConfig(filename='logs/werernns.log', encoding='utf-8', level=logging.DEBUG)
 tellem = logging.getLogger(__name__)
+"""
 
 cfg = configparser.ConfigParser()
-cfg.read('settings.cfg')
-print('[common.py] Shakespeare dataset location {0}'.format(cfg.get('DATASETS', 'shakespeare')))
+cfg.read('examples/settings.cfg')
+print('[examples.utils] Shakespeare dataset location {0}'.format(cfg.get('TRAIN', 'the_data')))
 
-"""
 
 def detach_tensors_in_list(the_tensor_lst):
     f_name = inspect.stack()[0][3]

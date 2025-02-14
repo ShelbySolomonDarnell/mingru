@@ -19,33 +19,43 @@ export TORCH_USE_CUDA_DSA=1
 
 runCode()
 {
-  read -p "Enter 0 to train, 1 to train and use wandb logging, or and 2 to test, with 3 to test with wandb logging --> " testing
+  read -p "Enter 0 to train, 1 to sample --> " testing
   if [ $testing -eq 0 ]; then
     echo 'Let us train!'
-    python -m examples.nlp train $training_data
-  elif [ $testing -eq 1 ]; then
-    echo 'Let us train, and log with wandb!'
-    python -m examples.nlp \
-                train \
-                  --wandb True \
-                $training_data
-  elif [ $testing -eq 2 ]; then 
+    read -p "Which optimizer should be used with the neural net type either [adamw or sgd] --> " the_optim
+    read -p "Do you want to log online with wandb (True 1/False 0) --> " log_online
+    if [ $log_online -eq 1 ]; then
+      echo 'Logging with wandb!'
+      python -m examples.nlp \
+                  train \
+                    --wandb True \
+                    --optim "$the_optim" \
+                  $training_data
+    else
+      python -m examples.nlp \
+                  train \
+                    --optim "$the_optim" \
+                  $training_data
+    fi
+  elif [ $testing -eq 1 ]; then 
     echo 'Let us test!'
     read -p "Type what you want the model to work with --> " sampletxt
-    python -m examples.nlp \
-                sample \
-                  --precond "$sampletxt" \
-                  --num-tokens $num_tokens \
-                $sample_model
-  else
-    echo 'Let us test, and log with wandb!'
-    read -p "Type what you want the model to work with --> " sampletxt
-    python -m examples.nlp \ 
-                sample 
-                  --wandb True \
-                  --num-tokens $num_tokens \
-                  --precond "$sampletxt" \
-                $sample_model
+    read -p "Do you want to log online with wandb (True 1/False 0) --> " log_online
+    if [ $log_online -eq 1 ]; then
+      echo 'Logging with wandb!'
+      python -m examples.nlp \
+                  sample \
+                    --wandb True \
+                    --precond "$sampletxt" \
+                    --num-tokens $num_tokens \
+                  $sample_model
+    else
+      python -m examples.nlp \
+                  sample \
+                    --precond "$sampletxt" \
+                    --num-tokens $num_tokens \
+                  $sample_model
+    fi
   fi
 }
 
