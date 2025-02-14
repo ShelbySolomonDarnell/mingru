@@ -19,6 +19,16 @@ print('[common.py] Shakespeare dataset location {0}'.format(cfg.get('DATASETS', 
 
 """
 
+def detach_tensors_in_list(the_tensor_lst):
+    f_name = inspect.stack()[0][3]
+    ndx = 0
+    result = []
+    for the_state in the_tensor_lst:
+        #print( "State {0} is {1}".format(ndx, the_state) )
+        result.append(the_state.detach().clone())
+        ndx += 1
+    return result
+
 
 '''
 This function takes two tensor size objects and the dimension on which they are 

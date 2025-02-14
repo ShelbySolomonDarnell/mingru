@@ -119,63 +119,64 @@ def train(cfg):
     )
 
     best_acc = 0
+    if cfg["wandb"]:
+        wandb.init(
+            # Set the project where this run will be logged
+            project="minGRU Shakespeare training",
+            #name=f"epoch_{epoch}",
+            name=f"minGRU epochs {cfg['num_epochs']}, hidden_sizes {cfg['hidden_sizes']}",
+            # Track hyper parameters and run metadata
+            config={
+                "learning_rate": cfg["lr"],
+                "batch_size": cfg["batch_size"],
+                "dropout": cfg["dropout"],
+                "architecture": "minGRU",
+                "dataset": "tiny-shakespeare",
+                "epochs": cfg["num_epochs"],
+                "sequence_length": cfg["seqlen"],
+                "vocabulary_size": cfg["vocab_size"],
+                "embedding_sizes": cfg["emb_size"],
+                "normalize": cfg["norm"],
+                "hidden_sizes": cfg["hidden_sizes"]
+            }
+        )
     detached_hidden_state = []
     for epoch in range(cfg["num_epochs"]):
-        if cfg["wandb"]:
-            wandb.init(
-                # Set the project where this run will be logged
-                project="minGRU Shakespeare training",
-                #name=f"epoch_{epoch}",
-                name=f"minGRU epochs {cfg['num_epochs']}, hidden_sizes {cfg['hidden_sizes']}",
-                # Track hyper parameters and run metadata
-                config={
-                    "learning_rate": cfg["lr"],
-                    "batch_size": cfg["batch_size"],
-                    "dropout": cfg["dropout"],
-                    "architecture": "minGRU",
-                    "dataset": "tiny-shakespeare",
-                    "epochs": cfg["num_epochs"],
-                    "sequence_length": cfg["seqlen"],
-                    "vocabulary_size": cfg["vocab_size"],
-                    "embedding_sizes": cfg["emb_size"],
-                    "normalize": cfg["norm"],
-                    "hidden_sizes": cfg["hidden_sizes"]
-                }
-            )
-        detached_hidden_state = None
         for step, (x, y) in enumerate(dl_train):
             x = x.to(dev)
             y = y.to(dev)
-            #if detached_hidden_state != None:
-            #    _logger.info(f"hidden state will be moved forward, its length is {len(detached_hidden_state)}" )
+            """
+            if detached_hidden_state != None and (step+1) % 20 == 0:
+                synopsis = ""
+                for the_state in detached_hidden_state:
+                    synopsis += f"{the_state.shape}\t"
+                #_logger.info(synopsis)
+            if step == 0:
+                y_hat, _ = model.forward(x)
+            else: 
+                detached_hidden_state = detach_tensors_in_list(hidden_state)
+            """
+            if (step % 775) == 0:
+                detached_hidden_state = None
             y_hat, hidden_state = model.forward(x, detached_hidden_state if detached_hidden_state != [] else None)
-            ndx = 0
-            detached_hidden_state = []
-            for the_state in hidden_state:
-                #print( "State {0} is {1}".format(ndx, the_state) )
-                detached_hidden_state.append(the_state.detach().clone())
-                ndx += 1
-
-
-            #y_hat, hidden_state = model.forward(x)
+            detached_hidden_state = detach_tensors_in_list(hidden_state)
 
             loss = crit(y_hat.permute(0, 2, 1), y)
             opt.zero_grad()
             loss.backward()
             opt.step()
+            perplexed = torch.exp(loss)
+            _logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, perplexity: {perplexed:.4f}")
             if (step + 1) % 20 == 0:
-            #if (step + 1) % 50 == 0:
-                perplexed = torch.exp(loss)
-                _logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, perplexity: {perplexed:.4f}")
+                #_logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, perplexity: {perplexed:.4f}")
                 wandb.log({"step":step+1, "loss":loss, "perplexity":perplexed}) if cfg["wandb"] else None
             if (step + 1) % 400 == 0:
                 val_acc, val_loss = validate(model, dev, ds_val)
-                wandb.log({"step": step+1, "validation_accuracy": val_acc*100, "validation_loss": val_loss}) if cfg["wandb"] else None
                 _logger.info(
                     f"Epoch {epoch+1}, Step {step+1}, Validation Accuracy: {val_acc*100:.2f}%, Validation Loss: {val_loss:.2f}"
                 )
                 if val_acc > best_acc:
-                    _logger.info("New best model")
+                    _logger.info(f"New best model at epoch {epoch} step {step+1}")
                     scripted = torch.jit.script(model)
                     torch.jit.save(
                         scripted,
@@ -188,6 +189,7 @@ def train(cfg):
                 model.train()
 
         sched.step()
+        detached_hidden_state = []
     wandb.finish() if cfg["wandb"] else None
 
 
@@ -310,7 +312,7 @@ if __name__ == "__main__":
         "seqlen": 256,
         "vocab_size": 50257,
         "emb_size": 768,
-        "hidden_sizes": [512, 1024, 2048, 4096, 8192],
+        "hidden_sizes": [512, 1024, 2048, 4096],
         #"hidden_sizes": [512, 1024, 2048, 4096, 8192],
         "norm": True,
         "dropout": 0.15,
