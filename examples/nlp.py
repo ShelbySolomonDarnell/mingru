@@ -139,7 +139,7 @@ def train(cfg):
             # Set the project where this run will be logged
             project="minGRU Shakespeare training",
             #name=f"epoch_{epoch}",
-            name=f"minGRU epochs {cfg['num_epochs']}, hidden_sizes {cfg['hidden_sizes']}",
+            name=f"minGRU epochs {cfg['num_epochs']}, optimizer {cfg['optim']}, hidden_sizes {cfg['hidden_sizes']}",
             # Track hyper parameters and run metadata
             config={
                 "learning_rate":   _cfg.get("MAIN","lr"),
@@ -181,14 +181,17 @@ def train(cfg):
             loss.backward()
             opt.step()
             perplexed = torch.exp(loss)
-            _logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, perplexity: {perplexed:.4f}")
+            #_logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, perplexity: {perplexed:.4f}")
             if (step + 1) % 20 == 0:
-                #_logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, perplexity: {perplexed:.4f}")
+                _logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, perplexity: {perplexed:.4f}")
                 wandb.log({"step":step+1, "loss":loss, "perplexity":perplexed}) if cfg["wandb"] else None
-            if (step + 1) % 400 == 0:
+            if (step + 1) % 200 == 0:
                 val_acc, val_loss = validate(model, dev, ds_val)
                 _logger.info(
                     f"Epoch {epoch+1}, Step {step+1}, Validation Accuracy: {val_acc*100:.2f}%, Validation Loss: {val_loss:.2f}"
+                )
+                wandb.log(
+                    {"Epoch":epoch+1,"Step":step+1,"Validation Accuracy":val_acc*100, "Validation Loss": val_loss}
                 )
                 if val_acc > best_acc:
                     _logger.info(f"New best model at epoch {epoch} step {step+1}")
