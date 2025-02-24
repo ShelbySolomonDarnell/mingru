@@ -40,7 +40,7 @@ runCode()
   elif [ $testing -eq 1 ]; then 
     echo 'Let us test!'
     read -p "Type what you want the model to work with --> " sampletxt
-    read -p "Do you want to log online with wandb (True 1/False 0) --> " log_online
+    read -p "Do you want to log online with wandb (False 0/True 1) --> " log_online
     if [ $log_online -eq 1 ]; then
       echo 'Logging with wandb!'
       python -m examples.nlp \

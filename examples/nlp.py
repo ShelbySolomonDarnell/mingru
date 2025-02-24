@@ -23,6 +23,7 @@ from examples.utils import *
 from examples.utils import cfg as _cfg
 
 import mingru
+import minlstm
 
 warnings.filterwarnings("ignore")
 
@@ -68,7 +69,7 @@ class NLPModel(torch.nn.Module):
         super().__init__()
 
         self.emb = torch.nn.Embedding(cfg["vocab_size"], cfg["emb_size"])
-        self.rnn = mingru.MinGRU(
+        self.rnn = minlstm.MinLSTM( #self.rnn = mingru.MinGRU(
             input_size=cfg["emb_size"],
             hidden_sizes=cfg["hidden_sizes"],
             dropout=cfg["dropout"],
@@ -76,6 +77,7 @@ class NLPModel(torch.nn.Module):
             bias=True,
             norm=cfg["norm"],
         )
+
         self.ln = torch.nn.LayerNorm(cfg["hidden_sizes"][-1], bias=False)
         self.fc = torch.nn.Linear(cfg["hidden_sizes"][-1], cfg["vocab_size"])
 
@@ -192,14 +194,14 @@ def train(cfg):
                 )
                 wandb.log(
                     {"Epoch":epoch+1,"Step":step+1,"Validation Accuracy":val_acc*100, "Validation Loss": val_loss}
-                )
+                ) if cfg["wandb"] else None
                 if val_acc > best_acc:
                     _logger.info(f"New best model at epoch {epoch} step {step+1}")
                     scripted = torch.jit.script(model)
                     torch.jit.save(
                         scripted,
                         f"tmp/"
-                        + Path(cfg["textfile"]).with_suffix(".nlp_best.pt").name,
+                        + Path(cfg["textfile"]+"_"+cfg["optim"]).with_suffix(".nlp_best.pt").name,
                     )
                     best_acc = val_acc
                 demo = generate_text(model, dev, prefix="\n", num_tokens=32, top_k=200)
@@ -359,8 +361,8 @@ if __name__ == "__main__":
         train(cfg)
         # train(cfg)
     elif args.cmd == "sample":
-        _logger.info(f"New sampling session with {cfg}")
         cfg.update(vars(args))
+        _logger.info(f"New sampling session with {cfg}")
         sample(cfg)
     else:
         parser.print_help()
