@@ -162,17 +162,7 @@ def train(cfg):
         for step, (x, y) in enumerate(dl_train):
             x = x.to(dev)
             y = y.to(dev)
-            """
-            if detached_hidden_state != None and (step+1) % 20 == 0:
-                synopsis = ""
-                for the_state in detached_hidden_state:
-                    synopsis += f"{the_state.shape}\t"
-                #_logger.info(synopsis)
-            if step == 0:
-                y_hat, _ = model.forward(x)
-            else: 
-                detached_hidden_state = detach_tensors_in_list(hidden_state)
-            """
+
             if (step % (len(dl_train)-1)) == 0:
                 detached_hidden_state = None
             y_hat, hidden_state = model.forward(x, detached_hidden_state if detached_hidden_state != [] else None)
@@ -183,6 +173,7 @@ def train(cfg):
             loss.backward()
             opt.step()
             perplexed = torch.exp(loss)
+
             #_logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, perplexity: {perplexed:.4f}")
             if (step + 1) % 20 == 0:
                 _logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, perplexity: {perplexed:.4f}")
