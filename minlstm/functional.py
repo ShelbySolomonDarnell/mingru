@@ -56,7 +56,7 @@ def _minlstm_parallel(
         h: (B,S,hidden_dims,*) hidden states
     """
 
-    diff        = F.softplus(-h) - F.softplus(-gate)
+    diff        = F.softplus(-hidden) - F.softplus(-gate)
     log_f       = -F.softplus(diff)
     log_i       = -F.softplus(-diff)
     log_h_0     = h.log()
@@ -93,9 +93,9 @@ def _minlstm_sequential(
         h: (B,1,hidden_dims,*) next hidden dims
     """
 
-    f_t     = torch.sigmoid(gate)
-    i_t     = log_g(gate)
-    h_tilde = log_g(hidden)
+    f_t     = torch.sigmoid(h)
+    i_t     = torch.sigmoid(gate)
+    h_tilde = g(hidden)
     f_prime = f_t / (f_t + i_t)
     i_prime = i_t / (f_t + i_t)
     h_t     = f_prime + h + i_prime + h_tilde
