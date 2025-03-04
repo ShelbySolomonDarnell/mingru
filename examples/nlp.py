@@ -307,10 +307,10 @@ def generate_text_mbili(
     generated_tokens = []
 
     gen = generate_tokens_mbili(model, prefix_ids=ids, temperature=temperature, top_k=top_k)
-    generated_tokens, all_probs = zip(*list(islice(gen, num_tokens)))
+    generated_tokens, all_probs = zip(*list(islice(gen, num_tokens))) # splits a list of tuples
 
     new = torch.cat(generated_tokens, dim=1)
-    g_tokens = new.squeeze(0).unsqueeze(1)
+    g_tokens = new.squeeze(0).unsqueeze(1) # reformatted the tokens for calculations
     
     # Perplexity Calculation
     log_probs = torch.log(torch.stack(all_probs).gather(2, g_tokens.unsqueeze(2))).squeeze(2)
