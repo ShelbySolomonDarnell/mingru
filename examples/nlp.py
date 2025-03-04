@@ -17,7 +17,7 @@ import tiktoken
 import torch
 import torch.nn.functional as F
 import torch.utils.data.dataloader
-from torcheval.metrics.text import Perplexity
+from torch.nn import Linear
 from examples.utils import *
 from examples.utils import cfg as _cfg
 
@@ -89,6 +89,7 @@ class NLPModel(torch.nn.Module):
         model_bias = True if cfg["arch"]=='minLSTM' else False
         self.ln = torch.nn.LayerNorm(cfg["hidden_sizes"][-1], model_bias)
         self.fc = torch.nn.Linear(cfg["hidden_sizes"][-1], cfg["vocab_size"])
+        self.to_hidden_f_i_gates = Linear(cfg["hidden_sizes"][-1], cfg["hidden_sizes"][-1]*3, bias = True)
 
     def forward(self, ids: torch.IntTensor, h: list[torch.Tensor] | None = None):
         x = self.emb(ids)
@@ -283,6 +284,64 @@ def generate_text(
     #wandb.log({"perplexity":perplexed})
     return enc.decode(new[0].cpu().tolist())
 
+@torch.no_grad()
+def generate_text_mbili(
+    model: NLPModel,
+    dev: torch.device,
+    prefix: str,
+    num_tokens: int,
+    temperature: float = 1.0,
+    top_k: int = None,
+) -> str:
+    enc = tiktoken.get_encoding("gpt2")
+    ids = (
+        torch.tensor(
+            enc.encode_ordinary(prefix),
+            dtype=int,
+        )
+        .to(dev)
+        .unsqueeze(0)
+    )
+    
+    all_probs = []
+    generated_tokens = []
+
+    gen = generate_tokens_mbili(model, prefix_ids=ids, temperature=temperature, top_k=top_k)
+    generated_tokens, all_probs = zip(*list(islice(gen, num_tokens)))
+
+    new = torch.cat(generated_tokens, dim=1)
+    g_tokens = new.squeeze(0).unsqueeze(1)
+    
+    # Perplexity Calculation
+    log_probs = torch.log(torch.stack(all_probs).gather(2, g_tokens.unsqueeze(2))).squeeze(2)
+
+    perplexity = torch.exp(-torch.sum(log_probs) / num_tokens)
+    #print("Sample perplexity is {0}".format(perplexity))
+
+    return enc.decode(new[0].cpu().tolist()), perplexity
+
+
+
+@torch.no_grad()
+def generate_tokens_mbili(model, prefix_ids, temperature=1.0, top_k=None):
+    assert prefix_ids.shape[1] > 0, "Need at least one start token"
+    inp = prefix_ids
+    h = None
+    all_probs = [] # Store all probabilities
+
+    while True:
+        logits, h = model.forward(inp, h)
+        logits = logits[:, -1, :] / temperature
+        if top_k is not None:
+            v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+            logits[logits < v[:, [-1]]] = -float("Inf")
+        probs = F.softmax(logits, dim=-1)
+        idx_next = torch.multinomial(probs, num_samples=1)
+        yield idx_next, probs # Yield both token and probabilities
+        inp = idx_next
+
+
+
 
 @torch.no_grad()
 def generate_tokens(model, prefix_ids, temperature=1.0, top_k=None):
@@ -296,13 +355,8 @@ def generate_tokens(model, prefix_ids, temperature=1.0, top_k=None):
         if top_k is not None:
             v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
             logits[logits < v[:, [-1]]] = -float("Inf")
-            #_logger.info(f"v: {v}, top_k: {top_k}")
         probs = F.softmax(logits, dim=-1)
-        #new_probs = [the_prob for the_prob in probs if the_prob != 0]
-        #_logger.info(f"Probs: {probs}")
         idx_next = torch.multinomial(probs, num_samples=1)
-        #_logger.info(f"Size of probs {probs.shape}")
-        #_logger.info(f"Size of idx_next {idx_next.shape}")
         yield idx_next
         inp = idx_next
 
@@ -312,8 +366,9 @@ def sample(cfg):
     model = torch.jit.load(cfg["ckpt"])
     model.eval()
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    output = generate_text(model, dev, args.precond, args.num_tokens, top_k=200)
-    print(output)
+    _logger.info(f"Sample perplexity is {perplexity}")
+    output, perplex = generate_text_mbili(model, dev, args.precond, args.num_tokens, top_k=200)
+    print("[Sampling perplexity] {0}\n{1}\n".format(perplex, output))
 
 
 if __name__ == "__main__":
