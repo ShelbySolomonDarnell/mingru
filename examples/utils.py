@@ -18,6 +18,26 @@ cfg = configparser.ConfigParser()
 cfg.read('examples/settings.cfg')
 print('[examples.utils] Shakespeare dataset location {0}'.format(cfg.get('TRAIN', 'the_data')))
 
+@staticmethod
+def splitFileThenWrite(path: str, split_percentage: int):
+    """Splits a file based on the split_percentage into two files."""
+    with open(path, "r", encoding="utf-8") as f:
+        data = f.read()
+    n = len(data)
+    the_result   = data[: int(n * (split_percentage/100))]
+    val_leftover = data[int(n * (split_percentage/100)) :]
+
+    name_a = path + "." + str(split_percentage) + "percent"
+    name_b = path + "." + str(100-split_percentage) + "percent"
+
+    try:
+        with open(name_a, "x") as f:
+            f.write(the_result)
+        with open(name_b, "x") as f:
+            f.write(val_leftover)
+    except FileExistsError:
+        print("I am not authorized to overwrite files...!")
+
 
 def detach_tensors_in_list(the_tensor_lst):
     f_name = inspect.stack()[0][3]

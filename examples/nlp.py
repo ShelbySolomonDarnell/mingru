@@ -10,6 +10,7 @@ import warnings
 from itertools import islice
 from pathlib import Path
 
+import sys
 import json
 import wandb
 import numpy as np
@@ -63,7 +64,7 @@ class TokenIdDataset(torch.utils.data.Dataset):
         val_ds = TokenIdDataset(val_ids, seqlen)
 
         return train_ds, val_ds
-
+    
 
 class NLPModel(torch.nn.Module):
     def __init__(self, cfg):
@@ -134,6 +135,9 @@ def train(cfg):
         ds_val, np.random.choice(len(ds_val), 256, replace=False)
     )
 
+    _logger.info(f"Number of examples in test dataset {len(ds_val.dataset)}")
+    _logger.info(f"Number of batches in test dataset {len(ds_val)}")
+
     model = NLPModel(cfg).to(dev)
 
     crit = torch.nn.CrossEntropyLoss(ignore_index=-1)
@@ -187,16 +191,13 @@ def train(cfg):
 
             #_logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, perplexity: {perplexed:.4f}")
             if (step + 1) % 20 == 0:
-                _logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, perplexity: {perplexed:.4f}")
-                wandb.log({"step":step+1, "loss":loss, "perplexity":perplexed}) if cfg["wandb"] else None
+                _logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, training perplexity: {perplexed:.4f}")
+                wandb.log({"step":step+1, "loss":loss, "training_perplexity":perplexed}) if cfg["wandb"] else None
             if (step + 1) % 200 == 0:
                 val_acc, val_loss = validate(model, dev, ds_val)
                 _logger.info(
                     f"Epoch {epoch+1}, Step {step+1}, Validation Accuracy: {val_acc*100:.2f}%, Validation Loss: {val_loss:.2f}"
                 )
-                wandb.log(
-                    {"Epoch":epoch+1,"Step":step+1,"Validation Accuracy":val_acc*100, "Validation Loss": val_loss}
-                ) if cfg["wandb"] else None
                 if val_acc > best_acc:
                     _logger.info(f"New best model at epoch {epoch} step {step+1}")
                     scripted = torch.jit.script(model)
@@ -206,8 +207,11 @@ def train(cfg):
                         + Path(cfg["textfile"]+"_"+cfg["optim"]).with_suffix(".nlp_best.pt").name,
                     )
                     best_acc = val_acc
-                demo = generate_text(model, dev, prefix="\n", num_tokens=32, top_k=200)
-                _logger.info(f"Sample model output: {demo}")
+                demo, sample_perplexity = generate_text_mbili(model, dev, prefix="\n", num_tokens=32, top_k=200)
+                wandb.log(
+                    {"Epoch":epoch+1,"Step":step+1,"Validation Accuracy":val_acc*100, "Validation Loss": val_loss, "Sample perplexity": sample_perplexity}
+                ) if cfg["wandb"] else None
+                _logger.info(f"Sample perplexity: {sample_perplexity}\nSample model output: {demo}")
                 model.train()
 
         sched.step()
@@ -308,15 +312,12 @@ def generate_text_mbili(
 
     gen = generate_tokens_mbili(model, prefix_ids=ids, temperature=temperature, top_k=top_k)
     generated_tokens, all_probs = zip(*list(islice(gen, num_tokens))) # splits a list of tuples
-
     new = torch.cat(generated_tokens, dim=1)
     g_tokens = new.squeeze(0).unsqueeze(1) # reformatted the tokens for calculations
     
     # Perplexity Calculation
     log_probs = torch.log(torch.stack(all_probs).gather(2, g_tokens.unsqueeze(2))).squeeze(2)
-
     perplexity = torch.exp(-torch.sum(log_probs) / num_tokens)
-    #print("Sample perplexity is {0}".format(perplexity))
 
     return enc.decode(new[0].cpu().tolist()), perplexity
 
@@ -366,8 +367,8 @@ def sample(cfg):
     model = torch.jit.load(cfg["ckpt"])
     model.eval()
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    _logger.info(f"Sample perplexity is {perplexity}")
     output, perplex = generate_text_mbili(model, dev, args.precond, args.num_tokens, top_k=200)
+    _logger.info(f"Sample perplexity is {perplex}")
     print("[Sampling perplexity] {0}\n{1}\n".format(perplex, output))
 
 
