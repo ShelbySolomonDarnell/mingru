@@ -149,7 +149,7 @@ def train(cfg):
         gamma=0.1,
     )
 
-    best_acc = 0
+    best_acc = 1e3
     if cfg["wandb"]:
         wandb.init(
             # Set the project where this run will be logged
@@ -204,7 +204,7 @@ def train(cfg):
                     torch.jit.save(
                         scripted,
                         f"tmp/"
-                        + Path(cfg["textfile"]+"_"+cfg["optim"]).with_suffix(".nlp_best.pt").name,
+                        + Path(cfg["textfile"]).with_suffix(".nlp_best.pt").name,
                     )
                     best_acc = val_acc
                 demo, sample_perplexity = generate_text_mbili(model, dev, prefix="\n", num_tokens=32, top_k=200)
