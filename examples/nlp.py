@@ -149,7 +149,7 @@ def train(cfg):
         gamma=0.1,
     )
 
-    best_acc = 1
+    best_acc = 0  # Start with 0 since we're tracking accuracy (0-1)
     if cfg["wandb"]:
         wandb.init(
             # Set the project where this run will be logged
