@@ -149,7 +149,7 @@ def train(cfg):
         gamma=0.1,
     )
 
-    best_acc = 1e3
+    best_acc = 1
     if cfg["wandb"]:
         wandb.init(
             # Set the project where this run will be logged
@@ -201,7 +201,7 @@ def train(cfg):
                 if val_acc > best_acc:
                     _logger.info(f"New best model at epoch {epoch} step {step+1}")
                     scripted = torch.jit.script(model)
-                    model_name = f"nlp_best_epochs{cfg['num_epochs']}_{cfg['arch']}_hidden{'_'.join(map(str, cfg['hidden_sizes']))}.pt"
+                    model_name = f"nlp_best.epochs{cfg['num_epochs']}_{cfg['arch']}_hidden{'_'.join(map(str, cfg['hidden_sizes']))}.pt"
                     torch.jit.save(
                         scripted,
                         f"tmp/{model_name}",
