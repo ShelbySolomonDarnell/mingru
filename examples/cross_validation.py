@@ -13,14 +13,13 @@ from examples.nlp import generate_text_mbili
 
 _logger = logging.getLogger("crossval")
 
-def cross_validate_generation(model_path: str, test_file: str, sample_size: int, num_samples: int = 5):
+def cross_validate_generation(model_path: str, test_file: str, sample_size: int):
     """Evaluate model's generative ability using cross-validation.
     
     Args:
         model_path: Path to trained model checkpoint
         test_file: Path to text file for testing
         sample_size: Number of tokens to use as input for generation
-        num_samples: Number of cross-validation samples to take
         
     Returns:
         List of perplexity values from each sample
@@ -37,11 +36,11 @@ def cross_validate_generation(model_path: str, test_file: str, sample_size: int,
     enc = tiktoken.get_encoding("gpt2")
     tokens = enc.encode_ordinary(text)
     
-    # Calculate chunk size
-    chunk_size = len(tokens) // num_samples
+    # Calculate number of chunks based on text length and sample size
+    num_chunks = len(tokens) // sample_size
     perplexities = []
     
-    for i in range(num_samples):
+    for i in range(num_chunks):
         # Select a different chunk each time
         start = i * chunk_size
         end = start + sample_size
@@ -62,7 +61,7 @@ def cross_validate_generation(model_path: str, test_file: str, sample_size: int,
         )
         
         perplexities.append(perplexity.item())
-        _logger.info(f"Sample {i+1}/{num_samples} - Perplexity: {perplexity:.2f}")
+        _logger.info(f"Sample {i+1}/{num_chunks} - Perplexity: {perplexity:.2f}")
     
     return perplexities
 
@@ -80,16 +79,12 @@ if __name__ == "__main__":
     parser.add_argument("testfile", help="Path to text file for testing")
     parser.add_argument("--sample-size", type=int, default=32, 
                        help="Number of tokens to use as input for generation")
-    parser.add_argument("--num-samples", type=int, default=5,
-                       help="Number of cross-validation samples to take")
-    
     args = parser.parse_args()
     
     perplexities = cross_validate_generation(
         args.model,
         args.testfile,
-        args.sample_size,
-        args.num_samples
+        args.sample_size
     )
     
     mean_perplexity = np.mean(perplexities)
