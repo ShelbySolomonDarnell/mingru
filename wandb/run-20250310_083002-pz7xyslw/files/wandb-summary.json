@@ -1,0 +1,1 @@
+{"Step":600,"_step":265,"Validation Loss":7.942262530326843,"_wandb":{"runtime":1803},"_timestamp":1.7415972058596334e+09,"_runtime":1802.890032805,"Validation Accuracy":20.78704833984375,"step":700,"loss":0.12049750238656998,"Sample perplexity":1.2601815462112427,"training_perplexity":1.1280579566955566,"Epoch":7}

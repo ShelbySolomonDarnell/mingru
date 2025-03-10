@@ -1,9 +1,9 @@
 clear
 
 # Set up paths and parameters
-test_data=~/Datasets/tiny-shakespeare/test.txt
+test_data=~/Datasets/tiny-shakespeare/train_coriolanus.csv.90percent
 sample_model=tmp/trn_corio_adamw_e7_10percent.nlp_best.pt
-sample_size=32
+sample_size=256
 num_samples=10
 export CUDA_LAUNCH_BLOCKING=1 
 export TORCH_USE_CUDA_DSA=1
@@ -15,8 +15,7 @@ if ! python -c "import tiktoken" &> /dev/null; then
 fi
 
 # Run cross-validation
-python examples/cross_validation.py \
+python -m examples.cross_validation \
     $sample_model \
     $test_data \
-    --sample-size $sample_size \
-    --num-samples $num_samples
+    --sample-size $sample_size

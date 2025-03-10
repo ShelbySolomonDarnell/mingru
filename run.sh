@@ -10,9 +10,10 @@ clear
 #CUDA_LAUNCH_BLOCKING=1 TORCH_USE_CUDA_DSA=1 python trainrnns.py
 
 #training_data=~/Datasets/tiny-shakespeare/train.csv
-training_data=~/Datasets/tiny-shakespeare/train_coriolanus.csv.10percent
-the_model=tmp/train_criolanus_10percent.nlp_best.pt
-sample_model=tmp/train_coriolanus.nlp_best.pt
+training_data=~/Datasets/tiny-shakespeare/train_coriolanus.csv.90percent
+#the_model=tmp/train_criolanus_90percent.nlp_best.pt
+#sample_model=tmp/train_coriolanus.nlp_best.pt
+sample_model=tmp/trn_corio_adamw_e7_10percent.nlp_best.pt
 num_tokens=256
 export CUDA_LAUNCH_BLOCKING=1 
 export TORCH_USE_CUDA_DSA=1
