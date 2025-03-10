@@ -201,10 +201,10 @@ def train(cfg):
                 if val_acc > best_acc:
                     _logger.info(f"New best model at epoch {epoch} step {step+1}")
                     scripted = torch.jit.script(model)
+                    model_name = f"nlp_best_epochs{cfg['num_epochs']}_{cfg['arch']}_hidden{'_'.join(map(str, cfg['hidden_sizes']))}.pt"
                     torch.jit.save(
                         scripted,
-                        f"tmp/"
-                        + Path(cfg["textfile"]).with_suffix(".nlp_best.pt").name,
+                        f"tmp/{model_name}",
                     )
                     best_acc = val_acc
                 demo, sample_perplexity = generate_text_mbili(model, dev, prefix="\n", num_tokens=32, top_k=200)
