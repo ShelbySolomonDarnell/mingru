@@ -42,7 +42,7 @@ def cross_validate_generation(model_path: str, test_file: str, sample_size: int)
     
     for i in range(num_chunks):
         # Select a different chunk each time
-        start = i * chunk_size
+        start = i * sample_size
         end = start + sample_size
         if end > len(tokens):
             continue
