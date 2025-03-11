@@ -5,6 +5,7 @@ https://github.com/cheind/mingru
 """
 
 import logging
+from logging.handlers import RotatingFileHandler
 import numpy as np
 import tiktoken
 import torch
@@ -12,6 +13,9 @@ from pathlib import Path
 from examples.nlp import generate_text_mbili
 
 _logger = logging.getLogger("crossval")
+handler = RotatingFileHandler("tmp/minrnn.boros.xover.log", maxBytes=512000, backupCount=100)
+_logger.addHandler(handler)
+
 
 def cross_validate_generation(model_path: str, test_file: str, sample_size: int):
     """Evaluate model's generative ability using cross-validation.
