@@ -33,7 +33,7 @@ def cross_validate_generation(model_path: str, test_file: str, sample_size: int,
     if use_wandb:
         wandb.init(
             project="MinRNN Cross-Validation",
-            name=f"Cross-val {Path(model_path).stem}",
+            name=f"Cross-val {Path(model_path).stem} Sample size {sample_size}",
             config={
                 "model_path": model_path,
                 "test_file": test_file,

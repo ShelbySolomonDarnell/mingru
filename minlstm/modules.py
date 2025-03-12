@@ -5,12 +5,15 @@ https://github.com/cheind/mingru
 """
 
 import abc
+import sys
 from typing import Final
 
 import torch
 import numpy as np
 
 from . import functional as mF
+from torch.nn import Linear 
+from torch.nn.functional import pad
 
 
 class MinLSTMBase(torch.nn.Module, metaclass=abc.ABCMeta):
@@ -146,6 +149,7 @@ class MinLSTM(MinLSTMBase):
         if isinstance(hidden_sizes, int):
             hidden_sizes = [hidden_sizes]
 
+        self.to_hidden_and_f_i_gate = Linear(input_size, input_size * 3, bias)
         self.layer_sizes = tuple([input_size] + hidden_sizes)
         self.num_layers = len(hidden_sizes)
         self.dropout = max(min(dropout, 1.0), 0.0)
@@ -211,14 +215,24 @@ class MinLSTM(MinLSTMBase):
             h = self.init_hidden_state(x)
 
         # input to next layer
-        inp = x
+        inp         = x
         next_hidden = []
 
         # hidden states across layers
         for lidx, layer in enumerate(self.layers):
             h_prev = h[lidx]
             gate, hidden = layer.gate_hidden(layer.norm(inp)).chunk(2, dim=2)
-            out = mF.minlstm_gate_hidden(gate, hidden, h_prev)
+            
+            hidden, forget = hidden.chunk(2, dim=1) if ( hidden.shape[1] > 1) else (hidden, hidden.detach().clone())
+            pad_value = hidden.shape[1] - forget.shape[1]
+            forget = forget if (pad_value == 0) else pad(forget, (0, 0, 0, pad_value))
+            #print("Gate shapes: main {0}\n\thidden {1}\n\tforget {2}".format(gate.shape, hidden.shape, forget.shape))
+            hidden = pad(hidden, (0, 0, 0, hidden.shape[1]))
+            forget = pad(forget, (0, 0, 0, forget.shape[1]))
+            #print("Gate shapes: main {0}\n\thidden {1}\n\tforget {2}".format(gate.shape, hidden.shape, forget.shape))
+            #sys.exit()
+            #out = mF.minlstm_gate_hidden(gate, hidden, h_prev)
+            out = mF.minlstm_gate_hidden(gate, hidden, h_prev, forget)
             next_hidden.append(out[:, -1:])
 
             # Add skip connection

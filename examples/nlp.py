@@ -83,14 +83,13 @@ class NLPModel(torch.nn.Module):
             hidden_sizes=cfg["hidden_sizes"],
             dropout=cfg["dropout"],
             residual=True,
-            bias=True,
+            bias=False,
             norm=cfg["norm"],
         )
 
         model_bias = True if cfg["arch"]=='minLSTM' else False
         self.ln = torch.nn.LayerNorm(cfg["hidden_sizes"][-1], model_bias)
         self.fc = torch.nn.Linear(cfg["hidden_sizes"][-1], cfg["vocab_size"])
-        self.to_hidden_f_i_gates = Linear(cfg["hidden_sizes"][-1], cfg["hidden_sizes"][-1]*3, bias = True)
 
     def forward(self, ids: torch.IntTensor, h: list[torch.Tensor] | None = None):
         x = self.emb(ids)

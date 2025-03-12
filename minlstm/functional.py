@@ -3,11 +3,12 @@
 Christoph Heind, 2024
 https://github.com/cheind/mingru
 """
-
+import sys
 import torch
 import torch.nn.functional as F
 
 from .scan import parallel_scan_log
+from torch.nn import Linear
 
 
 def g(x: torch.Tensor) -> torch.Tensor:
@@ -37,6 +38,7 @@ def _minlstm_parallel(
     h: torch.Tensor,
     gate: torch.Tensor,
     hidden: torch.Tensor,
+    forget: torch.Tensor,
 ):
     """Parallel MinLSTM forward
 
@@ -55,11 +57,14 @@ def _minlstm_parallel(
     Returns:
         h: (B,S,hidden_dims,*) hidden states
     """
-
-    diff        = F.softplus(-hidden) - F.softplus(-gate)
+    #print("Gate Shape {0} and index 1 {1}".format(gate.shape, gate.shape[1]))
+    #sys.exit()
+    #diff        = F.softplus(-hidden) - F.softplus(-gate)
+    diff        = F.softplus(-forget) - F.softplus(-gate)
     log_f       = -F.softplus(diff)
     log_i       = -F.softplus(-diff)
-    log_h_0     = h.log()
+    log_h_0     = h.log() #if (h != None) else -F.softplus(log_f)
+
     log_tilde_h = log_g(hidden)
     h = parallel_scan_log(
         log_f, 
@@ -92,7 +97,6 @@ def _minlstm_sequential(
     Returns:
         h: (B,1,hidden_dims,*) next hidden dims
     """
-
     f_t     = torch.sigmoid(h)
     i_t     = torch.sigmoid(gate)
     h_tilde = g(hidden)
@@ -109,13 +113,13 @@ def _minlstm_sequential(
     '''
 
 """
-The function name has been changed, nothing else, 
-REWRITE this method
+This function does not need to be modified
 """
 def minlstm_gate_hidden(
     gate: torch.Tensor,
     hidden: torch.Tensor,
     h: torch.Tensor,
+    forget: torch.Tensor,
 ):
     """Evaluate the (convolutional) MinGRU
 
@@ -137,7 +141,7 @@ def minlstm_gate_hidden(
     if gate.shape[1] == 1:
         return _minlstm_sequential(h, gate, hidden)
     else:
-        return _minlstm_parallel(h, gate, hidden)
+        return _minlstm_parallel(h, gate, hidden, forget)
 
 
 __all__ = ["minlstm_gate_hidden", "g", "log_g"]

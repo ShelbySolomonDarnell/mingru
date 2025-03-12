@@ -1,0 +1,1 @@
+{"_timestamp":1.74165778800033e+09,"mean_perplexity":4.186619575136603,"_step":781,"final_std_perplexity":1.8004962076550413,"_runtime":130.363627569,"perplexity":1.6289435625076294,"std_perplexity":1.8004962076550413,"sample":781,"_wandb":{"runtime":130},"final_mean_perplexity":4.186619575136603}

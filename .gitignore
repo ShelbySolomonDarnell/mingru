@@ -164,3 +164,4 @@ cython_debug/
 tmp/*
 !tmp/__keep__
 .aider*
+out.*.txt
