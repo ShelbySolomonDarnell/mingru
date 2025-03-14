@@ -16,14 +16,18 @@ import wandb
 import numpy as np
 import tiktoken
 import torch
+import mingru
+import minlstm
 import torch.nn.functional as F
 import torch.utils.data.dataloader
 from torch.nn import Linear
 from examples.utils import *
 from examples.utils import cfg as _cfg
 
-import mingru
-import minlstm
+#import mingru
+#import minlstm
+from mingru import *
+from minlstm import *
 
 warnings.filterwarnings("ignore")
 
