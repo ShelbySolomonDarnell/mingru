@@ -275,13 +275,20 @@ def train(cfg):
                     detached_h_state = detach_tensors_in_list(h_state)
                     detached_c_state = detach_tensors_in_list(c_state)
             else:  # minGRU
-                y_hat, hidden_state = model.forward(x, detached_hidden_state if detached_hidden_state != [] else None)
-                
-                # Ensure hidden_state is a list before detaching
-                if not isinstance(hidden_state, list) and hidden_state is not None:
-                    hidden_state = [hidden_state] if torch.is_tensor(hidden_state) else list(hidden_state)
-                
-                detached_hidden_state = detach_tensors_in_list(hidden_state)
+                if detached_hidden_state:
+                    # Use the separate states method for consistency
+                    x_emb = model.emb(x)
+                    rnn_out, h_out, _ = model.rnn.forward_with_separate_states(x_emb, detached_hidden_state)
+                    y_hat = model.fc(model.ln(rnn_out))
+                    detached_hidden_state = detach_tensors_in_list(h_out)
+                else:
+                    y_hat, hidden_state = model.forward(x)
+                    
+                    # Ensure hidden_state is a list before detaching
+                    if not isinstance(hidden_state, list) and hidden_state is not None:
+                        hidden_state = [hidden_state] if torch.is_tensor(hidden_state) else list(hidden_state)
+                    
+                    detached_hidden_state = detach_tensors_in_list(hidden_state)
 
             loss = crit(y_hat.permute(0, 2, 1), y)
             opt.zero_grad()
@@ -452,8 +459,13 @@ def generate_tokens_mbili(model, prefix_ids, temperature=1.0, top_k=None):
                     logits, hidden_state = model.forward(inp)
                     h, c = hidden_state
             else:
-                # For MinGRU, just pass h
-                logits, h = model.forward(inp, h)
+                # For MinGRU, use the separate states method for consistency
+                if h is not None:
+                    logits, h, _ = model.rnn.forward_with_separate_states(model.emb(inp), h)
+                    logits = model.fc(model.ln(logits))
+                else:
+                    # First call, initialize states
+                    logits, h = model.forward(inp)
                 
             logits = logits[:, -1, :] / temperature
             if top_k is not None:
@@ -495,8 +507,13 @@ def generate_tokens(model, prefix_ids, temperature=1.0, top_k=None):
                     logits, hidden_state = model.forward(inp)
                     h, c = hidden_state
             else:
-                # For MinGRU, just pass h
-                logits, h = model.forward(inp, h)
+                # For MinGRU, use the separate states method for consistency
+                if h is not None:
+                    logits, h, _ = model.rnn.forward_with_separate_states(model.emb(inp), h)
+                    logits = model.fc(model.ln(logits))
+                else:
+                    # First call, initialize states
+                    logits, h = model.forward(inp)
                 
             logits = logits[:, -1, :] / temperature
             if top_k is not None:

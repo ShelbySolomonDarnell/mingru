@@ -31,6 +31,31 @@ class MinGRUBase(torch.nn.Module, metaclass=abc.ABCMeta):
         h: list[torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, list[torch.Tensor]]:
         """Evaluate the MinGRU."""
+        
+    @torch.jit.export
+    def forward_with_separate_states(
+        self,
+        x: torch.Tensor,
+        h: list[torch.Tensor],
+        c: list[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
+        """Forward pass with separate h and c states for TorchScript compatibility.
+        
+        This method is a wrapper around forward() that takes h separately
+        and returns it separately, for compatibility with MinLSTM interface.
+        The c parameter is ignored for MinGRU.
+        
+        Args:
+            x: Input tensor
+            h: Hidden state list
+            c: Cell state list (ignored for MinGRU)
+            
+        Returns:
+            Tuple of (output, next_h, empty_list)
+        """
+        output, next_h = self.forward(x, h)
+        # Return empty list as c for compatibility with MinLSTM interface
+        return output, next_h, []
 
 
 class MinGRUCell(MinGRUBase):
