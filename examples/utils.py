@@ -45,6 +45,9 @@ def detach_tensors_in_list(the_tensor_container):
     This function handles tensors in lists or tuples, making it compatible with both
     MinGRU (which uses lists) and MinLSTM (which uses tuples of lists).
     
+    The function preserves the exact structure of the input container, ensuring
+    that data is returned in the same format it was received.
+    
     Args:
         the_tensor_container: A list or tuple of tensors, or a single tensor
         
@@ -63,16 +66,22 @@ def detach_tensors_in_list(the_tensor_container):
         
     # Handle tuple case (for MinLSTM which returns (h, c))
     if isinstance(the_tensor_container, tuple):
+        # Preserve tuple structure exactly
         return tuple(detach_tensors_in_list(item) for item in the_tensor_container)
     
     # Handle list case (for both MinGRU and elements of MinLSTM's tuple)
     if isinstance(the_tensor_container, list):
-        result = []
         list_length = len(the_tensor_container)
         print(f"[{f_name}] Processing list with length: {list_length}")
+        
+        # Preserve list structure exactly
+        result = []
         for ndx, the_state in enumerate(the_tensor_container):
-            #print("State {0} is {1}".format(ndx, the_state))
-            result.append(the_state.detach().clone())
+            if torch.is_tensor(the_state):
+                result.append(the_state.detach().clone())
+            else:
+                # Handle nested containers (like lists within lists)
+                result.append(detach_tensors_in_list(the_state))
         return result
         
     # If we get here, we have an unsupported type

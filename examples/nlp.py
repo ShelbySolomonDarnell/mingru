@@ -129,8 +129,19 @@ class NLPModel(torch.nn.Module):
             else:
                 # Let the RNN initialize the hidden states
                 x, hidden_state = self.rnn(x)
+            # Ensure hidden_state is always a tuple of (h, c)
+            if not isinstance(hidden_state, tuple):
+                _logger.warning("MinLSTM returned non-tuple hidden state, fixing format")
+                if isinstance(hidden_state, list):
+                    # Split the list in half for h and c if needed
+                    mid = len(hidden_state) // 2
+                    hidden_state = (hidden_state[:mid], hidden_state[mid:])
         else:  # MinGRU
             x, hidden_state = self.rnn(x, h)
+            # Ensure hidden_state is always a list for MinGRU
+            if not isinstance(hidden_state, list) and hidden_state is not None:
+                _logger.warning("MinGRU returned non-list hidden state, fixing format")
+                hidden_state = [hidden_state] if torch.is_tensor(hidden_state) else list(hidden_state)
             
         x = self.ln(x)
         logits = self.fc(x)
@@ -236,12 +247,30 @@ def train(cfg):
                 h_input = detached_h_state if detached_h_state else None
                 c_input = detached_c_state if detached_c_state else None
                 y_hat, hidden_state = model.forward(x, h_input, c_input)
+                
+                # Ensure hidden_state is a tuple before detaching
+                if not isinstance(hidden_state, tuple):
+                    _logger.warning("Received non-tuple hidden state from MinLSTM, fixing format")
+                    if isinstance(hidden_state, list):
+                        # Split the list in half for h and c if needed
+                        mid = len(hidden_state) // 2
+                        hidden_state = (hidden_state[:mid], hidden_state[mid:])
+                    else:
+                        # Create a default format if we can't determine the structure
+                        hidden_state = (hidden_state, hidden_state) if torch.is_tensor(hidden_state) else ([], [])
+                
                 # Detach the entire hidden state tuple
                 detached_hidden_state = detach_tensors_in_list(hidden_state)
                 # Unpack for next iteration
                 detached_h_state, detached_c_state = detached_hidden_state
             else:  # minGRU
                 y_hat, hidden_state = model.forward(x, detached_hidden_state if detached_hidden_state != [] else None)
+                
+                # Ensure hidden_state is a list before detaching
+                if not isinstance(hidden_state, list) and hidden_state is not None:
+                    _logger.warning("Received non-list hidden state from MinGRU, fixing format")
+                    hidden_state = [hidden_state] if torch.is_tensor(hidden_state) else list(hidden_state)
+                
                 detached_hidden_state = detach_tensors_in_list(hidden_state)
 
             loss = crit(y_hat.permute(0, 2, 1), y)
