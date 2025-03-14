@@ -12,6 +12,8 @@ import tiktoken
 import torch
 from pathlib import Path
 import sys
+import time
+import json
 
 # Try to import matplotlib, provide helpful error if not available
 try:
@@ -36,6 +38,52 @@ import os
 _logger = logging.getLogger("model_comparison")
 handler = RotatingFileHandler("tmp/minrnn.boros.comparison.log", maxBytes=512000, backupCount=100)
 _logger.addHandler(handler)
+
+def extract_model_info(model_name):
+    """Extract model information from the filename.
+    
+    Args:
+        model_name: Name of the model file
+        
+    Returns:
+        Dictionary with model information
+    """
+    info = {
+        "architecture": "MinGRU",
+        "hidden_sizes": "unknown",
+        "epochs": 0,
+        "optimizer": "unknown"
+    }
+    
+    # Extract architecture
+    if "minLSTM" in model_name:
+        info["architecture"] = "MinLSTM"
+    
+    # Extract hidden sizes
+    if "_hidden" in model_name:
+        try:
+            hidden_part = model_name.split("_hidden")[1]
+            sizes_str = hidden_part.split(".")[0]
+            info["hidden_sizes"] = sizes_str
+            info["hidden_sizes_list"] = [int(s) for s in sizes_str.split("_")]
+        except:
+            pass
+    
+    # Extract epochs
+    if "epochs" in model_name:
+        try:
+            epochs_part = model_name.split("epochs")[1]
+            info["epochs"] = int(epochs_part.split("_")[0])
+        except:
+            pass
+    
+    # Extract optimizer if present
+    if "_adam" in model_name.lower():
+        info["optimizer"] = "Adam"
+    elif "_sgd" in model_name.lower():
+        info["optimizer"] = "SGD"
+    
+    return info
 
 def load_model_from_checkpoint(model_path):
     """Load a model from a checkpoint file without using TorchScript.
@@ -164,7 +212,7 @@ def evaluate_model_directly(model_path, test_file, sample_size=256):
     
     return np.mean(perplexities), np.std(perplexities)
 
-def compare_models(model_paths, test_file, sample_size, use_wandb=False):
+def compare_models(model_paths, test_file, sample_size, use_wandb=False, save_results=True):
     """Compare multiple models on the same test data.
     
     Args:
@@ -172,6 +220,7 @@ def compare_models(model_paths, test_file, sample_size, use_wandb=False):
         test_file: Path to text file for testing
         sample_size: Number of tokens to use as input for generation
         use_wandb: Whether to log results to wandb
+        save_results: Whether to save results to CSV file
         
     Returns:
         DataFrame with model comparison results
@@ -226,27 +275,23 @@ def compare_models(model_paths, test_file, sample_size, use_wandb=False):
                 continue
             min_perplexity = max_perplexity = mean_perplexity  # We don't have min/max in direct evaluation
         
-        # Extract model architecture from filename
-        arch = "MinLSTM" if "minLSTM" in model_name else "MinGRU"
+        # Extract model information from filename
+        model_info = extract_model_info(model_name)
         
-        # Extract hidden sizes from filename if available
-        hidden_sizes = "unknown"
-        if "_hidden" in model_name:
-            try:
-                hidden_part = model_name.split("_hidden")[1]
-                hidden_sizes = hidden_part.split(".")[0]
-            except:
-                pass
-        
-        results.append({
+        # Create result entry
+        result_entry = {
             "model_name": model_name,
-            "architecture": arch,
-            "hidden_sizes": hidden_sizes,
+            "architecture": model_info["architecture"],
+            "hidden_sizes": model_info["hidden_sizes"],
+            "epochs": model_info["epochs"],
+            "optimizer": model_info["optimizer"],
             "mean_perplexity": mean_perplexity,
             "std_perplexity": std_perplexity,
             "min_perplexity": min_perplexity,
             "max_perplexity": max_perplexity
-        })
+        }
+        
+        results.append(result_entry)
         
         if use_wandb and WANDB_AVAILABLE:
             wandb.log({
@@ -266,9 +311,31 @@ def compare_models(model_paths, test_file, sample_size, use_wandb=False):
     _logger.info("\nModel Comparison Results:")
     _logger.info(df.to_string())
     
+    # Save results to CSV if requested
+    if save_results:
+        results_dir = Path("results")
+        results_dir.mkdir(exist_ok=True)
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        csv_path = results_dir / f"model_comparison_{timestamp}.csv"
+        df.to_csv(csv_path)
+        _logger.info(f"Results saved to {csv_path}")
+        
+        # Generate a detailed report
+        report_path = results_dir / f"model_comparison_report_{timestamp}.txt"
+        generate_report(df, report_path, test_file, sample_size)
+        _logger.info(f"Detailed report saved to {report_path}")
+    
     # Create visualization if matplotlib is available
     if MATPLOTLIB_AVAILABLE:
         plot_comparison(df)
+        
+        # Save the plot if requested
+        if save_results:
+            plot_path = results_dir / f"model_comparison_plot_{timestamp}.png"
+            fig = plot_comparison(df, show=False)
+            fig.savefig(plot_path)
+            _logger.info(f"Plot saved to {plot_path}")
+            plt.close(fig)
     
     if use_wandb and WANDB_AVAILABLE:
         # Log the table
@@ -283,6 +350,70 @@ def compare_models(model_paths, test_file, sample_size, use_wandb=False):
         wandb.finish()
     
     return df
+
+def generate_report(df, report_path, test_file, sample_size):
+    """Generate a detailed report of model comparison results.
+    
+    Args:
+        df: DataFrame with model comparison results
+        report_path: Path to save the report
+        test_file: Path to the test file used
+        sample_size: Sample size used for evaluation
+    """
+    with open(report_path, 'w') as f:
+        f.write("=" * 80 + "\n")
+        f.write("MODEL COMPARISON REPORT\n")
+        f.write("=" * 80 + "\n\n")
+        
+        f.write(f"Generated on: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Test file: {test_file}\n")
+        f.write(f"Sample size: {sample_size}\n\n")
+        
+        f.write("-" * 80 + "\n")
+        f.write("SUMMARY\n")
+        f.write("-" * 80 + "\n\n")
+        
+        # Best model overall
+        best_model = df.loc[df['mean_perplexity'].idxmin()]
+        f.write(f"Best model overall: {best_model['model_name']}\n")
+        f.write(f"  Architecture: {best_model['architecture']}\n")
+        f.write(f"  Hidden sizes: {best_model['hidden_sizes']}\n")
+        f.write(f"  Mean perplexity: {best_model['mean_perplexity']:.2f}\n")
+        f.write(f"  Std deviation: {best_model['std_perplexity']:.2f}\n\n")
+        
+        # Best model by architecture
+        f.write("Best model by architecture:\n")
+        for arch in df['architecture'].unique():
+            arch_df = df[df['architecture'] == arch]
+            if not arch_df.empty:
+                best_arch_model = arch_df.loc[arch_df['mean_perplexity'].idxmin()]
+                f.write(f"  {arch}: {best_arch_model['model_name']}\n")
+                f.write(f"    Mean perplexity: {best_arch_model['mean_perplexity']:.2f}\n")
+                f.write(f"    Hidden sizes: {best_arch_model['hidden_sizes']}\n\n")
+        
+        # Architecture comparison
+        f.write("Architecture comparison:\n")
+        arch_stats = df.groupby('architecture')['mean_perplexity'].agg(['mean', 'std', 'min', 'max'])
+        for arch, stats in arch_stats.iterrows():
+            f.write(f"  {arch}:\n")
+            f.write(f"    Mean of means: {stats['mean']:.2f}\n")
+            f.write(f"    Best perplexity: {stats['min']:.2f}\n")
+            f.write(f"    Worst perplexity: {stats['max']:.2f}\n\n")
+        
+        # Detailed results
+        f.write("-" * 80 + "\n")
+        f.write("DETAILED RESULTS\n")
+        f.write("-" * 80 + "\n\n")
+        
+        for _, row in df.iterrows():
+            f.write(f"Model: {row['model_name']}\n")
+            f.write(f"  Architecture: {row['architecture']}\n")
+            f.write(f"  Hidden sizes: {row['hidden_sizes']}\n")
+            f.write(f"  Mean perplexity: {row['mean_perplexity']:.2f}\n")
+            f.write(f"  Std deviation: {row['std_perplexity']:.2f}\n")
+            f.write(f"  Min perplexity: {row['min_perplexity']:.2f}\n")
+            f.write(f"  Max perplexity: {row['max_perplexity']:.2f}\n")
+            f.write("\n")
 
 def plot_comparison(df, show=True):
     """Create a bar chart comparing model perplexities.
@@ -356,6 +487,8 @@ if __name__ == "__main__":
                        help="Enable wandb logging")
     parser.add_argument("--direct", action="store_true",
                        help="Use direct evaluation instead of cross-validation")
+    parser.add_argument("--save", action="store_true", default=True,
+                       help="Save results to CSV and generate report")
     args = parser.parse_args()
     
     # Expand the user home directory in the testfile path
@@ -372,27 +505,23 @@ if __name__ == "__main__":
             mean_perplexity, std_perplexity = evaluate_model_directly(model_path, testfile, args.sample_size)
             
             if not np.isinf(mean_perplexity):
-                # Extract model architecture from filename
-                arch = "MinLSTM" if "minLSTM" in model_name else "MinGRU"
+                # Extract model information from filename
+                model_info = extract_model_info(model_name)
                 
-                # Extract hidden sizes from filename if available
-                hidden_sizes = "unknown"
-                if "_hidden" in model_name:
-                    try:
-                        hidden_part = model_name.split("_hidden")[1]
-                        hidden_sizes = hidden_part.split(".")[0]
-                    except:
-                        pass
-                
-                results.append({
+                # Create result entry
+                result_entry = {
                     "model_name": model_name,
-                    "architecture": arch,
-                    "hidden_sizes": hidden_sizes,
+                    "architecture": model_info["architecture"],
+                    "hidden_sizes": model_info["hidden_sizes"],
+                    "epochs": model_info["epochs"],
+                    "optimizer": model_info["optimizer"],
                     "mean_perplexity": mean_perplexity,
                     "std_perplexity": std_perplexity,
                     "min_perplexity": mean_perplexity,  # Same as mean in direct mode
                     "max_perplexity": mean_perplexity   # Same as mean in direct mode
-                })
+                }
+                
+                results.append(result_entry)
         
         if results:
             # Create DataFrame for analysis
@@ -405,9 +534,34 @@ if __name__ == "__main__":
             _logger.info("\nModel Comparison Results:")
             _logger.info(df.to_string())
             
+            # Save results if requested
+            if args.save:
+                results_dir = Path("results")
+                results_dir.mkdir(exist_ok=True)
+                timestamp = time.strftime("%Y%m%d-%H%M%S")
+                csv_path = results_dir / f"model_comparison_{timestamp}.csv"
+                df.to_csv(csv_path)
+                _logger.info(f"Results saved to {csv_path}")
+                
+                # Generate a detailed report
+                report_path = results_dir / f"model_comparison_report_{timestamp}.txt"
+                generate_report(df, report_path, testfile, args.sample_size)
+                _logger.info(f"Detailed report saved to {report_path}")
+            
             # Create visualization if matplotlib is available
             if MATPLOTLIB_AVAILABLE:
                 plot_comparison(df)
+                
+                # Save the plot if requested
+                if args.save:
+                    results_dir = Path("results")
+                    results_dir.mkdir(exist_ok=True)
+                    timestamp = time.strftime("%Y%m%d-%H%M%S")
+                    plot_path = results_dir / f"model_comparison_plot_{timestamp}.png"
+                    fig = plot_comparison(df, show=False)
+                    fig.savefig(plot_path)
+                    _logger.info(f"Plot saved to {plot_path}")
+                    plt.close(fig)
         else:
             _logger.error("No models could be evaluated successfully")
     else:
@@ -415,5 +569,6 @@ if __name__ == "__main__":
             args.models,
             testfile,
             args.sample_size,
-            args.wandb
+            args.wandb,
+            args.save
         )
