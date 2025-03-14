@@ -1,5 +1,19 @@
 """PyTorch (convolutional) MinLSTM reference implementation
 
+This module implements the core functional components of MinLSTM, a minimal
+long short-term memory architecture. MinLSTM differs from MinGRU in that it
+maintains two hidden states (h and c) instead of just one.
+
+Key differences between MinLSTM and MinGRU:
+1. MinLSTM has two hidden states: h (hidden state) and c (cell state)
+2. MinLSTM uses three gates: input, forget, and output gates
+3. MinGRU uses two gates: reset and update gates
+
+The hidden state handling in MinLSTM requires special attention when:
+- Initializing states (both h and c need to be initialized)
+- Passing states between batches (both h and c need to be detached)
+- Processing sequences (both h and c are updated and returned)
+
 Christoph Heind, 2024
 https://github.com/cheind/mingru
 """
@@ -43,6 +57,18 @@ def _minlstm_parallel(
     cell_state: torch.Tensor,
 ):
     """Parallel MinLSTM forward
+
+    This function implements an optimized version of the LSTM update equations
+    for processing an entire sequence at once. It uses a parallel scan algorithm
+    to efficiently compute the recurrent updates.
+
+    The parallel implementation is more efficient for training when processing
+    entire sequences, while the sequential version is used for generation.
+
+    Key differences from standard LSTM:
+    - Uses log-space computations for numerical stability
+    - Employs parallel scan algorithm for efficient sequence processing
+    - Optimized for better gradient flow through the sequence
 
     This function takes gate and hidden outputs directly,
     as MinLSTM forward is equal for convolutional/standard
@@ -88,6 +114,18 @@ def _minlstm_sequential(
 ):
     """Sequential MinLSTM forward.
 
+    This function implements the standard LSTM update equations for a single
+    time step. It is used when processing one token at a time (e.g., during
+    generation).
+
+    The update equations are:
+    i_t = sigmoid(input_gate)
+    f_t = sigmoid(forget_gate)
+    o_t = sigmoid(output_gate)
+    c_tilde = tanh(cell_state)
+    c_t = f_t * c_{t-1} + i_t * c_tilde
+    h_t = o_t * tanh(c_t)
+
     This function takes gate and hidden outputs directly,
     as MinLSTM forward is equal for convolutional/standard
     MinLSTM from this point on.
@@ -132,6 +170,18 @@ def minlstm_gate_hidden(
 
     The code chooses sequential and parallel forward
     depending on the size of the sequence dimension S.
+
+    MinLSTM uses three gates and a cell state:
+    - input_gate (i_t): Controls how much new information to add to the cell state
+    - forget_gate (f_t): Controls how much of the previous cell state to retain
+    - output_gate (o_t): Controls how much of the cell state to expose as the hidden state
+    - cell_state (c_tilde): Candidate values to add to the cell state
+
+    The cell state (c) acts as the memory of the network and is updated as:
+    c_t = f_t * c_{t-1} + i_t * c_tilde_t
+
+    The hidden state (h) is then computed as:
+    h_t = o_t * tanh(c_t)
 
     Params:
         input_gate: (B,S,hidden_dims,*) input gate outputs
