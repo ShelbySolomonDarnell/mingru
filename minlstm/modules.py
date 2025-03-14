@@ -220,7 +220,16 @@ class MinLSTM(MinLSTMBase):
 
         # hidden states across layers
         for lidx, layer in enumerate(self.layers):
-            h_prev = h[lidx]
+            # Get previous hidden and cell states
+            h_prev = h[lidx] if lidx < len(h) else None
+            
+            # Initialize if not available
+            if h_prev is None:
+                h_prev = [
+                    mF.g(inp.new_zeros(inp.shape[0], 1, self.layer_sizes[lidx+1])),
+                    inp.new_zeros(inp.shape[0], 1, self.layer_sizes[lidx+1])
+                ]
+                
             # Split into input gate, forget gate, output gate, and cell state
             gates_and_cell = layer.gate_hidden(layer.norm(inp))
             input_gate, forget_gate, output_gate, cell_state = gates_and_cell.chunk(4, dim=2)
