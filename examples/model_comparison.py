@@ -296,7 +296,7 @@ def compare_models(model_paths, test_file, sample_size, use_wandb=False, save_re
         if use_wandb and WANDB_AVAILABLE:
             wandb.log({
                 "model": model_name,
-                "architecture": arch,
+                "architecture": model_info["architecture"],
                 "mean_perplexity": mean_perplexity,
                 "std_perplexity": std_perplexity
             })
