@@ -68,6 +68,8 @@ def detach_tensors_in_list(the_tensor_container):
     # Handle list case (for both MinGRU and elements of MinLSTM's tuple)
     if isinstance(the_tensor_container, list):
         result = []
+        list_length = len(the_tensor_container)
+        print(f"[{f_name}] Processing list with length: {list_length}")
         for ndx, the_state in enumerate(the_tensor_container):
             #print("State {0} is {1}".format(ndx, the_state))
             result.append(the_state.detach().clone())
