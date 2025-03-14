@@ -1,7 +1,7 @@
-"""PyTorch (convolutional) MinGRU reference implementation
+"""PyTorch (convolutional) MinLSTM reference implementation
 
 Christoph Heind, 2024
-https://github.com/cheind/mingru
+https://github.com/cheind/minlstm
 """
 
 import abc
@@ -149,7 +149,7 @@ class MinLSTM(MinLSTMBase):
         if isinstance(hidden_sizes, int):
             hidden_sizes = [hidden_sizes]
 
-        self.to_f_i_gate = Linear(input_size, input_size * 2, bias)
+        # No need for this layer in LSTM implementation
         self.layer_sizes = tuple([input_size] + hidden_sizes)
         self.num_layers = len(hidden_sizes)
         self.dropout = max(min(dropout, 1.0), 0.0)
@@ -168,9 +168,9 @@ class MinLSTM(MinLSTMBase):
             else:
                 mdict["norm"] = torch.nn.Identity()
 
-            # Combined linear features for gate and hidden
+            # Combined linear features for input gate, forget gate, output gate, and cell state
             mdict["gate_hidden"] = torch.nn.Linear(
-                ind, outd * 2, bias=bias, **factory_kwargs
+                ind, outd * 4, bias=bias, **factory_kwargs
             )
 
             # Residual alignment layer if features size mismatch
@@ -221,21 +221,23 @@ class MinLSTM(MinLSTMBase):
         # hidden states across layers
         for lidx, layer in enumerate(self.layers):
             h_prev = h[lidx]
-            gate, hidden = layer.gate_hidden(layer.norm(inp)).chunk(2, dim=2)
+            # Split into input gate, forget gate, output gate, and cell state
+            gates_and_cell = layer.gate_hidden(layer.norm(inp))
+            input_gate, forget_gate, output_gate, cell_state = gates_and_cell.chunk(4, dim=2)
 
-            inp, forget = self.to_f_i_gate(gate).chunk(2, dim = -1)
-
-            #hidden, forget = hidden.chunk(2, dim=1) if ( hidden.shape[1] > 1) else (hidden, hidden.detach().clone())
-            pad_value = hidden.shape[1] - forget.shape[1]
-            forget = forget if (pad_value == 0) else pad(forget, (0, 0, 0, pad_value))
-            #print("Gate shapes: main {0}\n\thidden {1}\n\tforget {2}".format(gate.shape, hidden.shape, forget.shape))
-            hidden = pad(hidden, (0, 0, 0, hidden.shape[1]))
-            forget = pad(forget, (0, 0, 0, forget.shape[1]))
-            #print("Gate shapes: main {0}\n\thidden {1}\n\tforget {2}".format(gate.shape, hidden.shape, forget.shape))
-            sys.exit()
-            #out = mF.minlstm_gate_hidden(gate, hidden, h_prev)
-            out = mF.minlstm_gate_hidden(gate, hidden, h_prev, forget)
-            next_hidden.append(out[:, -1:])
+            # Split the gate outputs into input, forget, and output gates
+            input_gate, forget_gate, output_gate = gate.chunk(3, dim=2)
+            
+            # Process the cell state
+            out, c_next = mF.minlstm_gate_hidden(
+                input_gate, 
+                forget_gate, 
+                output_gate, 
+                hidden, 
+                h_prev[0],  # hidden state
+                h_prev[1]   # cell state
+            )
+            next_hidden.append([out[:, -1:], c_next[:, -1:]])
 
             # Add skip connection
             if self.residual:
@@ -246,11 +248,17 @@ class MinLSTM(MinLSTMBase):
 
         return out, next_hidden
 
-    def init_hidden_state(self, x: torch.Tensor) -> list[torch.Tensor]:
-        """Returns a list of 'zero' hidden states for each layer."""
+    def init_hidden_state(self, x: torch.Tensor) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+        """Returns a tuple of lists of 'zero' hidden and cell states for each layer."""
 
+        batch_size = x.shape[0]
         return [
-            mF.g(x.new_zeros(x.shape[0], 1, hidden_size))
+            [
+                # Hidden state (h)
+                torch.zeros(batch_size, 1, hidden_size, device=x.device, dtype=x.dtype),
+                # Cell state (c)
+                torch.zeros(batch_size, 1, hidden_size, device=x.device, dtype=x.dtype)
+            ]
             for hidden_size in self.layer_sizes[1:]
         ]
 
