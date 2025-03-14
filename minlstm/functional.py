@@ -36,9 +36,11 @@ def log_g(x: torch.Tensor) -> torch.Tensor:
 
 def _minlstm_parallel(
     h: torch.Tensor,
-    gate: torch.Tensor,
-    hidden: torch.Tensor,
-    forget: torch.Tensor,
+    c: torch.Tensor,
+    input_gate: torch.Tensor,
+    forget_gate: torch.Tensor,
+    output_gate: torch.Tensor,
+    cell_state: torch.Tensor,
 ):
     """Parallel MinLSTM forward
 
@@ -51,97 +53,103 @@ def _minlstm_parallel(
 
     Params:
         h: (B,1,hidden_dims,*) previous hidden state
-        gate: (B,S,hidden_dims,*) gate outputs
-        hidden: (B,S,hidden_dims,*) hidden outputs
+        c: (B,1,hidden_dims,*) previous cell state
+        input_gate: (B,S,hidden_dims,*) input gate outputs
+        forget_gate: (B,S,hidden_dims,*) forget gate outputs
+        output_gate: (B,S,hidden_dims,*) output gate outputs
+        cell_state: (B,S,hidden_dims,*) cell state outputs
 
     Returns:
         h: (B,S,hidden_dims,*) hidden states
+        c: (B,S,hidden_dims,*) cell states
     """
-    #print("Gate Shape {0} and index 1 {1}".format(gate.shape, gate.shape[1]))
-    #sys.exit()
-    #diff        = F.softplus(-hidden) - F.softplus(-gate)
-    diff        = F.softplus(-forget) - F.softplus(-gate)
-    log_f       = -F.softplus(diff)
-    log_i       = -F.softplus(-diff)
-    log_h_0     = h.log() #if (h != None) else -F.softplus(log_f)
+    diff = F.softplus(-forget_gate) - F.softplus(-input_gate)
+    log_f = -F.softplus(diff)
+    log_i = -F.softplus(-diff)
+    log_c_0 = c.log()
 
-    log_tilde_h = log_g(hidden)
-    h = parallel_scan_log(
+    log_tilde_c = torch.tanh(cell_state).log()
+    c_next = parallel_scan_log(
         log_f, 
-        torch.cat([log_h_0, log_i + log_tilde_h], dim=1))
-    return h[:, 1:]  # tail
+        torch.cat([log_c_0, log_i + log_tilde_c], dim=1))
+    c_next = c_next[:, 1:]  # tail
+    
+    h_next = torch.sigmoid(output_gate) * torch.tanh(c_next)
+    
+    return h_next, c_next
 
-"""
-The function name has been changed, nothing else, 
-REWRITE this method
-"""
 def _minlstm_sequential(
     h: torch.Tensor,
-    gate: torch.Tensor,
-    hidden: torch.Tensor,
+    c: torch.Tensor,
+    input_gate: torch.Tensor,
+    forget_gate: torch.Tensor,
+    output_gate: torch.Tensor,
+    cell_state: torch.Tensor,
 ):
-    """Sequential MinGRU forward.
+    """Sequential MinLSTM forward.
 
     This function takes gate and hidden outputs directly,
-    as MinGRU forward is equal for convolutional/standard
-    MinGRU from this point on.
+    as MinLSTM forward is equal for convolutional/standard
+    MinLSTM from this point on.
 
     This function works for any number of spatial dimensions,
     which is indicated by `*` below.
 
     Params:
         h: (B,1,hidden_dims,*) previous hidden state
-        gate: (B,1,hidden_dims,*) gate outputs
-        hidden: (B,1,hidden_dims,*) hidden outputs
+        c: (B,1,hidden_dims,*) previous cell state
+        input_gate: (B,1,hidden_dims,*) input gate outputs
+        forget_gate: (B,1,hidden_dims,*) forget gate outputs
+        output_gate: (B,1,hidden_dims,*) output gate outputs
+        cell_state: (B,1,hidden_dims,*) cell state outputs
 
     Returns:
-        h: (B,1,hidden_dims,*) next hidden dims
+        h: (B,1,hidden_dims,*) next hidden state
+        c: (B,1,hidden_dims,*) next cell state
     """
-    f_t     = torch.sigmoid(h)
-    i_t     = torch.sigmoid(gate)
-    h_tilde = g(hidden)
-    f_prime = f_t / (f_t + i_t)
-    i_prime = i_t / (f_t + i_t)
-    h_t     = f_prime + h + i_prime + h_tilde
-    return h_t
+    i_t = torch.sigmoid(input_gate)
+    f_t = torch.sigmoid(forget_gate)
+    o_t = torch.sigmoid(output_gate)
+    c_tilde = torch.tanh(cell_state)
+    
+    c_next = f_t * c + i_t * c_tilde
+    h_next = o_t * torch.tanh(c_next)
+    
+    return h_next, c_next
 
-    '''
-    z = torch.sigmoid(gate)
-    h_tilde = g(hidden)
-    h_t = (1 - z) * h + z * h_tilde
-    return h_t
-    '''
-
-"""
-This function does not need to be modified
-"""
 def minlstm_gate_hidden(
-    gate: torch.Tensor,
-    hidden: torch.Tensor,
+    input_gate: torch.Tensor,
+    forget_gate: torch.Tensor,
+    output_gate: torch.Tensor,
+    cell_state: torch.Tensor,
     h: torch.Tensor,
-    forget: torch.Tensor,
+    c: torch.Tensor,
 ):
-    """Evaluate the (convolutional) MinGRU
+    """Evaluate the (convolutional) MinLSTM
 
-    This method is the main entry point to evaluate the MinGRU. It
-    works for both convolutional and non-convolutional MinGRUS.
+    This method is the main entry point to evaluate the MinLSTM. It
+    works for both convolutional and non-convolutional MinLSTMs.
 
     The code chooses sequential and parallel forward
     depending on the size of the sequence dimension S.
 
     Params:
-        gate: (B,1,hidden_dims,*) gate outputs
-        hidden: (B,1,hidden_dims,*) hidden outputs
+        input_gate: (B,S,hidden_dims,*) input gate outputs
+        forget_gate: (B,S,hidden_dims,*) forget gate outputs
+        output_gate: (B,S,hidden_dims,*) output gate outputs
+        cell_state: (B,S,hidden_dims,*) cell state outputs
         h: (B,1,hidden_dims,*) previous hidden state
+        c: (B,1,hidden_dims,*) previous cell state
 
     Returns:
         h: (B,S,hidden_dims,*) next hidden states
+        c: (B,S,hidden_dims,*) next cell states
     """
 
-    if gate.shape[1] == 1:
-        return _minlstm_sequential(h, gate, hidden)
+    if input_gate.shape[1] == 1:
+        return _minlstm_sequential(h, c, input_gate, forget_gate, output_gate, cell_state)
     else:
-        return _minlstm_parallel(h, gate, hidden, forget)
+        return _minlstm_parallel(h, c, input_gate, forget_gate, output_gate, cell_state)
 
 
 __all__ = ["minlstm_gate_hidden", "g", "log_g"]
