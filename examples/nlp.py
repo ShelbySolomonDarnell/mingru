@@ -122,7 +122,11 @@ class NLPModel(torch.nn.Module):
         
         # Handle different RNN architectures
         if isinstance(self.rnn, minlstm.MinLSTM):
-            x, (h, c) = self.rnn(x, h, c)
+            # MinLSTM expects h and c as a tuple of lists
+            if h is not None and c is not None:
+                x, (h, c) = self.rnn(x, h)
+            else:
+                x, (h, c) = self.rnn(x)
             hidden_state = (h, c)
         else:  # MinGRU
             x, h = self.rnn(x, h)
@@ -228,10 +232,12 @@ def train(cfg):
                     
             # Forward pass with appropriate hidden state handling
             if cfg["arch"] == "minLSTM":
+                # For MinLSTM, pass h and c together
                 h_input = detached_h_state if detached_h_state else None
                 c_input = detached_c_state if detached_c_state else None
-                y_hat, (h_state, c_state) = model.forward(x, h_input, c_input)
-                # Detach hidden states to prevent backprop through sequence
+                y_hat, hidden_state = model.forward(x, h_input, c_input)
+                # Unpack and detach hidden states
+                h_state, c_state = hidden_state
                 detached_h_state = detach_tensors_in_list(h_state)
                 detached_c_state = detach_tensors_in_list(c_state)
             else:  # minGRU
@@ -401,7 +407,8 @@ def generate_tokens_mbili(model, prefix_ids, temperature=1.0, top_k=None):
     try:
         while True:
             if is_lstm:
-                logits, (h, c) = model.forward(inp, h, c)
+                logits, hidden_state = model.forward(inp, h, c)
+                h, c = hidden_state  # Unpack the tuple
             else:
                 logits, h = model.forward(inp, h)
                 
@@ -438,7 +445,8 @@ def generate_tokens(model, prefix_ids, temperature=1.0, top_k=None):
     try:
         while True:
             if is_lstm:
-                logits, (h, c) = model.forward(inp, h, c)
+                logits, hidden_state = model.forward(inp, h, c)
+                h, c = hidden_state  # Unpack the tuple
             else:
                 logits, h = model.forward(inp, h)
                 
