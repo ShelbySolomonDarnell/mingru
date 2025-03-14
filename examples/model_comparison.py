@@ -203,7 +203,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--models", nargs="+", required=True,
                        help="Paths to model checkpoint files")
-    parser.add_argument("--testfile", required=True,
+    parser.add_argument("--testfile", default="~/Datasets/tiny-shakespeare/train_coriolanus.csv.10percent",
                        help="Path to text file for testing")
     parser.add_argument("--sample-size", type=int, default=256, 
                        help="Number of tokens to use as input for generation")
@@ -211,9 +211,12 @@ if __name__ == "__main__":
                        help="Enable wandb logging")
     args = parser.parse_args()
     
+    # Expand the user home directory in the testfile path
+    testfile = Path(args.testfile).expanduser()
+    
     compare_models(
         args.models,
-        args.testfile,
+        testfile,
         args.sample_size,
         args.wandb
     )

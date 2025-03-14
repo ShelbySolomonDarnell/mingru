@@ -48,7 +48,8 @@ def cross_validate_generation(model_path: str, test_file: str, sample_size: int,
     model.to(dev)
     
     # Load and tokenize test data
-    with open(test_file, "r", encoding="utf-8") as f:
+    test_file_path = Path(test_file).expanduser()
+    with open(test_file_path, "r", encoding="utf-8") as f:
         text = f.read()
     enc = tiktoken.get_encoding("gpt2")
     tokens = enc.encode_ordinary(text)
@@ -145,7 +146,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("model", help="Path to model checkpoint file or glob pattern if --batch is used")
-    parser.add_argument("testfile", help="Path to text file for testing")
+    parser.add_argument("--testfile", default="~/Datasets/tiny-shakespeare/train_coriolanus.csv.10percent", 
+                       help="Path to text file for testing")
     parser.add_argument("--sample-size", type=int, default=256, 
                        help="Number of tokens to use as input for generation")
     parser.add_argument("--wandb", type=bool, default=False,
@@ -153,6 +155,9 @@ if __name__ == "__main__":
     parser.add_argument("--batch", action="store_true",
                        help="Process multiple models (provide glob pattern to model)")
     args = parser.parse_args()
+    
+    # Expand the user home directory in the testfile path
+    testfile = Path(args.testfile).expanduser()
     
     if args.batch:
         import glob
@@ -163,14 +168,14 @@ if __name__ == "__main__":
         _logger.info(f"Found {len(model_paths)} models to evaluate")
         results = batch_cross_validate(
             model_paths,
-            args.testfile,
+            testfile,
             args.sample_size,
             args.wandb
         )
     else:
         perplexities = cross_validate_generation(
             args.model,
-            args.testfile,
+            testfile,
             args.sample_size,
             args.wandb
         )
