@@ -37,7 +37,7 @@ class MinGRUBase(torch.nn.Module, metaclass=abc.ABCMeta):
         self,
         x: torch.Tensor,
         h: list[torch.Tensor],
-        c: list[torch.Tensor] = None,
+        c: list[torch.Tensor] = [],
     ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
         """Forward pass with separate h and c states for TorchScript compatibility.
         
