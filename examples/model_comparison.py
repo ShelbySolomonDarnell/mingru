@@ -378,6 +378,8 @@ def generate_report(df, report_path, test_file, sample_size):
         f.write(f"Best model overall: {best_model['model_name']}\n")
         f.write(f"  Architecture: {best_model['architecture']}\n")
         f.write(f"  Hidden sizes: {best_model['hidden_sizes']}\n")
+        f.write(f"  Epochs: {best_model['epochs']}\n")
+        f.write(f"  Optimizer: {best_model['optimizer']}\n")
         f.write(f"  Mean perplexity: {best_model['mean_perplexity']:.2f}\n")
         f.write(f"  Std deviation: {best_model['std_perplexity']:.2f}\n\n")
         
@@ -389,7 +391,9 @@ def generate_report(df, report_path, test_file, sample_size):
                 best_arch_model = arch_df.loc[arch_df['mean_perplexity'].idxmin()]
                 f.write(f"  {arch}: {best_arch_model['model_name']}\n")
                 f.write(f"    Mean perplexity: {best_arch_model['mean_perplexity']:.2f}\n")
-                f.write(f"    Hidden sizes: {best_arch_model['hidden_sizes']}\n\n")
+                f.write(f"    Hidden sizes: {best_arch_model['hidden_sizes']}\n")
+                f.write(f"    Epochs: {best_arch_model['epochs']}\n")
+                f.write(f"    Optimizer: {best_arch_model['optimizer']}\n\n")
         
         # Architecture comparison
         f.write("Architecture comparison:\n")
@@ -398,7 +402,33 @@ def generate_report(df, report_path, test_file, sample_size):
             f.write(f"  {arch}:\n")
             f.write(f"    Mean of means: {stats['mean']:.2f}\n")
             f.write(f"    Best perplexity: {stats['min']:.2f}\n")
-            f.write(f"    Worst perplexity: {stats['max']:.2f}\n\n")
+            f.write(f"    Worst perplexity: {stats['max']:.2f}\n")
+            f.write(f"    Std deviation: {stats['std']:.2f}\n\n")
+        
+        # Optimizer comparison if multiple optimizers exist
+        if len(df['optimizer'].unique()) > 1:
+            f.write("Optimizer comparison:\n")
+            opt_stats = df.groupby('optimizer')['mean_perplexity'].agg(['mean', 'std', 'min', 'max'])
+            for opt, stats in opt_stats.iterrows():
+                f.write(f"  {opt}:\n")
+                f.write(f"    Mean of means: {stats['mean']:.2f}\n")
+                f.write(f"    Best perplexity: {stats['min']:.2f}\n")
+                f.write(f"    Worst perplexity: {stats['max']:.2f}\n")
+                f.write(f"    Std deviation: {stats['std']:.2f}\n\n")
+        
+        # Hidden size analysis
+        f.write("Hidden size analysis:\n")
+        # Group by hidden sizes if possible
+        if df['hidden_sizes'].nunique() > 1:
+            hidden_stats = df.groupby('hidden_sizes')['mean_perplexity'].agg(['mean', 'std', 'min', 'max'])
+            for hidden, stats in hidden_stats.iterrows():
+                f.write(f"  {hidden}:\n")
+                f.write(f"    Mean perplexity: {stats['mean']:.2f}\n")
+                f.write(f"    Min perplexity: {stats['min']:.2f}\n")
+                f.write(f"    Max perplexity: {stats['max']:.2f}\n")
+                f.write(f"    Std deviation: {stats['std']:.2f}\n\n")
+        else:
+            f.write("  All models use the same hidden sizes configuration\n\n")
         
         # Detailed results
         f.write("-" * 80 + "\n")
@@ -409,11 +439,44 @@ def generate_report(df, report_path, test_file, sample_size):
             f.write(f"Model: {row['model_name']}\n")
             f.write(f"  Architecture: {row['architecture']}\n")
             f.write(f"  Hidden sizes: {row['hidden_sizes']}\n")
+            f.write(f"  Epochs: {row['epochs']}\n")
+            f.write(f"  Optimizer: {row['optimizer']}\n")
             f.write(f"  Mean perplexity: {row['mean_perplexity']:.2f}\n")
             f.write(f"  Std deviation: {row['std_perplexity']:.2f}\n")
             f.write(f"  Min perplexity: {row['min_perplexity']:.2f}\n")
             f.write(f"  Max perplexity: {row['max_perplexity']:.2f}\n")
             f.write("\n")
+        
+        # Recommendations
+        f.write("-" * 80 + "\n")
+        f.write("RECOMMENDATIONS\n")
+        f.write("-" * 80 + "\n\n")
+        
+        # Recommend best architecture
+        best_arch = arch_stats['mean'].idxmin()
+        f.write(f"1. Recommended architecture: {best_arch}\n")
+        f.write(f"   Mean perplexity: {arch_stats.loc[best_arch, 'mean']:.2f}\n\n")
+        
+        # Recommend best optimizer if multiple exist
+        if len(df['optimizer'].unique()) > 1:
+            best_opt = opt_stats['mean'].idxmin()
+            f.write(f"2. Recommended optimizer: {best_opt}\n")
+            f.write(f"   Mean perplexity: {opt_stats.loc[best_opt, 'mean']:.2f}\n\n")
+        
+        # Recommend best hidden size configuration if multiple exist
+        if df['hidden_sizes'].nunique() > 1:
+            best_hidden = hidden_stats['mean'].idxmin()
+            f.write(f"3. Recommended hidden sizes: {best_hidden}\n")
+            f.write(f"   Mean perplexity: {hidden_stats.loc[best_hidden, 'mean']:.2f}\n\n")
+        
+        # Overall best configuration
+        f.write("4. Best overall configuration:\n")
+        f.write(f"   Model: {best_model['model_name']}\n")
+        f.write(f"   Architecture: {best_model['architecture']}\n")
+        f.write(f"   Hidden sizes: {best_model['hidden_sizes']}\n")
+        f.write(f"   Optimizer: {best_model['optimizer']}\n")
+        f.write(f"   Epochs: {best_model['epochs']}\n")
+        f.write(f"   Mean perplexity: {best_model['mean_perplexity']:.2f}\n")
 
 def plot_comparison(df, show=True):
     """Create a bar chart comparing model perplexities.
@@ -428,11 +491,12 @@ def plot_comparison(df, show=True):
     if not MATPLOTLIB_AVAILABLE:
         print("Cannot create plot: matplotlib is not installed")
         return None
-        
-    fig, ax = plt.subplots(figsize=(12, 6))
     
-    # Create bar chart
-    bars = ax.bar(
+    # Create two subplots - one for bar chart, one for architecture comparison
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 8))
+    
+    # Create bar chart on first subplot
+    bars = ax1.bar(
         df["model_name"], 
         df["mean_perplexity"],
         yerr=df["std_perplexity"],
@@ -445,11 +509,12 @@ def plot_comparison(df, show=True):
         bars[i].set_color("blue" if arch == "MinLSTM" else "orange")
     
     # Add labels and title
-    ax.set_xlabel("Model")
-    ax.set_ylabel("Perplexity (lower is better)")
-    ax.set_title("Model Comparison - Mean Perplexity with Standard Deviation")
+    ax1.set_xlabel("Model")
+    ax1.set_ylabel("Perplexity (lower is better)")
+    ax1.set_title("Model Comparison - Mean Perplexity with Standard Deviation")
     
     # Rotate x-axis labels for readability
+    plt.sca(ax1)
     plt.xticks(rotation=45, ha="right")
     
     # Add legend
@@ -458,7 +523,31 @@ def plot_comparison(df, show=True):
         Patch(facecolor="blue", label="MinLSTM"),
         Patch(facecolor="orange", label="MinGRU")
     ]
-    ax.legend(handles=legend_elements)
+    ax1.legend(handles=legend_elements)
+    
+    # Create architecture comparison on second subplot
+    if len(df['architecture'].unique()) > 1:
+        arch_stats = df.groupby('architecture')['mean_perplexity'].agg(['mean', 'std', 'min', 'max']).reset_index()
+        
+        # Create grouped bar chart
+        x = np.arange(len(arch_stats))
+        width = 0.2
+        
+        ax2.bar(x - width*1.5, arch_stats['mean'], width, label='Mean', color='green', alpha=0.7)
+        ax2.bar(x - width/2, arch_stats['min'], width, label='Min', color='blue', alpha=0.7)
+        ax2.bar(x + width/2, arch_stats['max'], width, label='Max', color='red', alpha=0.7)
+        ax2.bar(x + width*1.5, arch_stats['std'], width, label='Std', color='purple', alpha=0.7)
+        
+        ax2.set_xlabel('Architecture')
+        ax2.set_ylabel('Perplexity')
+        ax2.set_title('Architecture Comparison')
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(arch_stats['architecture'])
+        ax2.legend()
+    else:
+        ax2.text(0.5, 0.5, "Only one architecture present\nNo comparison possible", 
+                 ha='center', va='center', fontsize=12)
+        ax2.axis('off')
     
     plt.tight_layout()
     
