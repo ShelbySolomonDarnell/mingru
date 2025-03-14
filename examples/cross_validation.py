@@ -100,6 +100,40 @@ def cross_validate_generation(model_path: str, test_file: str, sample_size: int,
     
     return perplexities
 
+def batch_cross_validate(model_paths, test_file, sample_size, use_wandb=False):
+    """Run cross-validation on multiple models and return their results.
+    
+    Args:
+        model_paths: List of paths to model checkpoint files
+        test_file: Path to text file for testing
+        sample_size: Number of tokens to use as input for generation
+        use_wandb: Whether to use wandb logging
+        
+    Returns:
+        Dictionary mapping model paths to their perplexity results
+    """
+    results = {}
+    
+    for model_path in model_paths:
+        _logger.info(f"Cross-validating model: {model_path}")
+        perplexities = cross_validate_generation(
+            model_path,
+            test_file,
+            sample_size,
+            use_wandb
+        )
+        results[model_path] = perplexities
+        
+        mean_perplexity = np.mean(perplexities)
+        std_perplexity = np.std(perplexities)
+        
+        _logger.info(f"Model: {Path(model_path).name}")
+        _logger.info(f"Mean perplexity: {mean_perplexity:.2f}")
+        _logger.info(f"Std. deviation: {std_perplexity:.2f}")
+        _logger.info("-" * 40)
+    
+    return results
+
 if __name__ == "__main__":
     import argparse
     
@@ -116,18 +150,34 @@ if __name__ == "__main__":
                        help="Number of tokens to use as input for generation")
     parser.add_argument("--wandb", type=bool, default=False,
                        help="Enable wandb logging")
+    parser.add_argument("--batch", action="store_true",
+                       help="Process multiple models (provide glob pattern to model)")
     args = parser.parse_args()
     
-    perplexities = cross_validate_generation(
-        args.model,
-        args.testfile,
-        args.sample_size,
-        args.wandb
-    )
-    
-    mean_perplexity = np.mean(perplexities)
-    std_perplexity = np.std(perplexities)
-    
-    _logger.info(f"Cross-validation results:")
-    _logger.info(f"Mean perplexity: {mean_perplexity:.2f}")
-    _logger.info(f"Std. deviation: {std_perplexity:.2f}")
+    if args.batch:
+        import glob
+        model_paths = glob.glob(args.model)
+        if not model_paths:
+            _logger.error(f"No models found matching pattern: {args.model}")
+            exit(1)
+        _logger.info(f"Found {len(model_paths)} models to evaluate")
+        results = batch_cross_validate(
+            model_paths,
+            args.testfile,
+            args.sample_size,
+            args.wandb
+        )
+    else:
+        perplexities = cross_validate_generation(
+            args.model,
+            args.testfile,
+            args.sample_size,
+            args.wandb
+        )
+        
+        mean_perplexity = np.mean(perplexities)
+        std_perplexity = np.std(perplexities)
+        
+        _logger.info(f"Cross-validation results:")
+        _logger.info(f"Mean perplexity: {mean_perplexity:.2f}")
+        _logger.info(f"Std. deviation: {std_perplexity:.2f}")

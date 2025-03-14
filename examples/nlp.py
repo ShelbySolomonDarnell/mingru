@@ -31,6 +31,10 @@ _logger = logging.getLogger("nlp")
 handler = RotatingFileHandler("tmp/minrnn.boros.log", maxBytes=512000, backupCount=100)
 _logger.addHandler(handler)
 
+def get_architecture_name():
+    """Get the architecture name from the config."""
+    return _cfg.get("MAIN", "arch", fallback="minGRU")
+
 
 class TokenIdDataset(torch.utils.data.Dataset):
 
@@ -157,18 +161,18 @@ def train(cfg):
             name=f"{cfg['arch']} epochs {cfg['num_epochs']}, optimizer {cfg['optim']}, hidden_sizes {cfg['hidden_sizes']}",
             # Track hyper parameters and run metadata
             config={
-                "architecture":    _cfg.get("MAIN", "arch"),
-                "learning_rate":   _cfg.get("MAIN","lr"),
-                "batch_size":      _cfg.get("MAIN","batch_size"), #cfg["batch_size"],
-                "dropout":         _cfg.get("MAIN","dropout"), #cfg["dropout"],
-                "architecture":    _cfg.get("MAIN", "arch_gru"), #"minGRU",
-                "dataset":         _cfg.get("MAIN","datasetA"), #"tiny-shakespeare",
-                "epochs":          _cfg.get("MAIN","num_epochs"), #cfg["num_epochs"],
-                "sequence_length": _cfg.get("MAIN", "seqlen"), #cfg["seqlen"],
-                "vocabulary_size": _cfg.get("MAIN", "vocab_size"), #cfg["vocab_size"],
-                "embedding_sizes": _cfg.get("MAIN", "emb_size"), #cfg["emb_size"],
-                "normalize":       _cfg.get("MAIN", "norm"), #cfg["norm"],
-                "hidden_sizes":    _cfg.get("MAIN", "hidden_sizes") #cfg["hidden_sizes"]
+                "architecture":    cfg["arch"],
+                "learning_rate":   cfg["lr"],
+                "batch_size":      cfg["batch_size"],
+                "dropout":         cfg["dropout"],
+                "dataset":         cfg["dataset"],
+                "epochs":          cfg["num_epochs"],
+                "sequence_length": cfg["seqlen"],
+                "vocabulary_size": cfg["vocab_size"],
+                "embedding_size":  cfg["emb_size"],
+                "normalize":       cfg["norm"],
+                "hidden_sizes":    cfg["hidden_sizes"],
+                "optimizer":       cfg["optim"]
             }
         )
     detached_hidden_state = []
@@ -366,9 +370,12 @@ def sample(cfg):
     model = torch.jit.load(cfg["ckpt"])
     model.eval()
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    output, perplex = generate_text_mbili(model, dev, args.precond, args.num_tokens, top_k=200)
+    output, perplex = generate_text_mbili(model, dev, cfg["precond"], cfg["num_tokens"], top_k=200)
     _logger.info(f"Sample perplexity is {perplex}")
     print("[Sampling perplexity] {0}\n{1}\n".format(perplex, output))
+    
+    # Return the results for potential further use
+    return output, perplex
 
 
 if __name__ == "__main__":
