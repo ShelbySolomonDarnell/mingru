@@ -224,16 +224,13 @@ class MinLSTM(MinLSTMBase):
             # Split into input gate, forget gate, output gate, and cell state
             gates_and_cell = layer.gate_hidden(layer.norm(inp))
             input_gate, forget_gate, output_gate, cell_state = gates_and_cell.chunk(4, dim=2)
-
-            # Split the gate outputs into input, forget, and output gates
-            input_gate, forget_gate, output_gate = gate.chunk(3, dim=2)
             
             # Process the cell state
             out, c_next = mF.minlstm_gate_hidden(
                 input_gate, 
                 forget_gate, 
                 output_gate, 
-                hidden, 
+                cell_state, 
                 h_prev[0],  # hidden state
                 h_prev[1]   # cell state
             )
