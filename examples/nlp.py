@@ -152,7 +152,11 @@ class NLPModel(torch.nn.Module):
                     # Create a default format
                     hidden_state = (hidden_state, hidden_state) if torch.is_tensor(hidden_state) else ([], [])
         else:  # MinGRU
-            x, hidden_state = self.rnn(x, h)
+            # Use forward_with_separate_states for consistency with MinLSTM interface
+            if h is not None:
+                x, hidden_state, _ = self.rnn.forward_with_separate_states(x, h)
+            else:
+                x, hidden_state = self.rnn(x)
             
             # Ensure hidden_state is always a list for MinGRU
             if not isinstance(hidden_state, list) and hidden_state is not None:
