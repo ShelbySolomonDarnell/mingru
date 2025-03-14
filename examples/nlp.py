@@ -124,9 +124,9 @@ class NLPModel(torch.nn.Module):
         if isinstance(self.rnn, minlstm.MinLSTM):
             # MinLSTM expects h and c as a tuple of lists
             if h is not None and c is not None:
-                x, (h, c) = self.rnn(x, h)
+                x, (h, c) = self.rnn(x, (h, c))
             else:
-                x, (h, c) = self.rnn(x)
+                x, h = self.rnn(x, h)
             hidden_state = (h, c)
         else:  # MinGRU
             x, h = self.rnn(x, h)
