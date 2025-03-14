@@ -96,6 +96,28 @@ class NLPModel(torch.nn.Module):
         self.fc = torch.nn.Linear(cfg["hidden_sizes"][-1], cfg["vocab_size"])
 
     def forward(self, ids: torch.IntTensor, h: list[torch.Tensor] | None = None, c: list[torch.Tensor] | None = None):
+        """Forward pass through the NLP model.
+        
+        This method processes token IDs through the model's components:
+        1. Embeds token IDs into continuous vectors
+        2. Processes embeddings through the RNN (either MinLSTM or MinGRU)
+        3. Applies layer normalization to the RNN output
+        4. Projects to vocabulary logits via the fully connected layer
+        
+        The method handles both MinLSTM and MinGRU architectures:
+        - MinLSTM: Requires both hidden state (h) and cell state (c)
+        - MinGRU: Requires only hidden state (h)
+        
+        Args:
+            ids: Integer tensor of token IDs with shape [batch_size, seq_len]
+            h: Optional list of hidden state tensors from previous steps
+            c: Optional list of cell state tensors (only used with MinLSTM)
+            
+        Returns:
+            tuple: (logits, hidden_state) where:
+                - logits: Tensor with shape [batch_size, seq_len, vocab_size]
+                - hidden_state: Either a tuple (h, c) for MinLSTM or just h for MinGRU
+        """
         x = self.emb(ids)
         
         # Handle different RNN architectures
