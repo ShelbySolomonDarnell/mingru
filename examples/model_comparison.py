@@ -54,6 +54,7 @@ def load_model_from_checkpoint(model_path):
         
         # Determine architecture
         arch = "minLSTM" if "minLSTM" in model_name else "minGRU"
+        _logger.info(f"Detected architecture: {arch} for model {model_name}")
         
         # Extract hidden sizes
         hidden_sizes = [256, 512, 1024]  # Default
@@ -62,8 +63,9 @@ def load_model_from_checkpoint(model_path):
                 hidden_part = model_name.split("_hidden")[1]
                 sizes_str = hidden_part.split(".")[0]
                 hidden_sizes = [int(s) for s in sizes_str.split("_")]
-            except:
-                pass
+                _logger.info(f"Detected hidden sizes: {hidden_sizes}")
+            except Exception as e:
+                _logger.warning(f"Could not parse hidden sizes from filename: {str(e)}")
         
         # Create model config
         cfg = {
@@ -76,25 +78,36 @@ def load_model_from_checkpoint(model_path):
         }
         
         # Create model
+        _logger.info(f"Creating model with config: {cfg}")
         model = NLPModel(cfg)
         
         # Try to load state dict
         try:
             # First try loading as TorchScript
+            _logger.info("Attempting to load as TorchScript model")
             scripted_model = torch.jit.load(model_path)
             # Extract state dict from scripted model
             state_dict = {}
             for name, param in scripted_model.named_parameters():
                 state_dict[name] = param.detach()
-            model.load_state_dict(state_dict)
+            
+            # Check if we got all the parameters
+            missing_keys = set(model.state_dict().keys()) - set(state_dict.keys())
+            if missing_keys:
+                _logger.warning(f"Missing keys in state dict: {missing_keys}")
+                
+            model.load_state_dict(state_dict, strict=False)
+            _logger.info("Successfully loaded model from TorchScript")
             return model
-        except:
+        except Exception as e:
+            _logger.warning(f"Failed to load as TorchScript, trying regular checkpoint: {str(e)}")
             # If that fails, try loading as regular checkpoint
             checkpoint = torch.load(model_path, map_location='cpu')
             if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['state_dict'])
+                model.load_state_dict(checkpoint['state_dict'], strict=False)
             else:
-                model.load_state_dict(checkpoint)
+                model.load_state_dict(checkpoint, strict=False)
+            _logger.info("Successfully loaded model from checkpoint")
             return model
     except Exception as e:
         _logger.error(f"Failed to load model {model_path}: {str(e)}")

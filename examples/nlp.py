@@ -95,12 +95,21 @@ class NLPModel(torch.nn.Module):
         self.ln = torch.nn.LayerNorm(cfg["hidden_sizes"][-1], model_bias)
         self.fc = torch.nn.Linear(cfg["hidden_sizes"][-1], cfg["vocab_size"])
 
-    def forward(self, ids: torch.IntTensor, h: list[torch.Tensor] | None = None):
+    def forward(self, ids: torch.IntTensor, h: list[torch.Tensor] | None = None, c: list[torch.Tensor] | None = None):
         x = self.emb(ids)
-        x, h = self.rnn(x, h)
+        
+        # Handle different RNN architectures
+        if isinstance(self.rnn, minlstm.MinLSTM):
+            x, (h, c) = self.rnn(x, h, c)
+            hidden_state = (h, c)
+        else:  # MinGRU
+            x, h = self.rnn(x, h)
+            hidden_state = h
+            
         x = self.ln(x)
         logits = self.fc(x)
-        return logits, h
+        
+        return logits, hidden_state
 
 def init_optimizer(params, the_cfg):
     result = None
@@ -175,16 +184,37 @@ def train(cfg):
                 "optimizer":       cfg["optim"]
             }
         )
-    detached_hidden_state = []
+    # Initialize hidden state variables based on architecture
+    if cfg["arch"] == "minLSTM":
+        detached_h_state = []
+        detached_c_state = []
+    else:  # minGRU
+        detached_hidden_state = []
+        
     for epoch in range(cfg["num_epochs"]):
         for step, (x, y) in enumerate(dl_train):
             x = x.to(dev)
             y = y.to(dev)
 
             if (step % (len(dl_train)-1)) == 0:
-                detached_hidden_state = None
-            y_hat, hidden_state = model.forward(x, detached_hidden_state if detached_hidden_state != [] else None)
-            detached_hidden_state = detach_tensors_in_list(hidden_state)
+                # Reset hidden states at the beginning of each epoch
+                if cfg["arch"] == "minLSTM":
+                    detached_h_state = []
+                    detached_c_state = []
+                else:  # minGRU
+                    detached_hidden_state = None
+                    
+            # Forward pass with appropriate hidden state handling
+            if cfg["arch"] == "minLSTM":
+                h_input = detached_h_state if detached_h_state else None
+                c_input = detached_c_state if detached_c_state else None
+                y_hat, (h_state, c_state) = model.forward(x, h_input, c_input)
+                # Detach hidden states to prevent backprop through sequence
+                detached_h_state = detach_tensors_in_list(h_state)
+                detached_c_state = detach_tensors_in_list(c_state)
+            else:  # minGRU
+                y_hat, hidden_state = model.forward(x, detached_hidden_state if detached_hidden_state != [] else None)
+                detached_hidden_state = detach_tensors_in_list(hidden_state)
 
             loss = crit(y_hat.permute(0, 2, 1), y)
             opt.zero_grad()
@@ -334,12 +364,25 @@ def generate_text_mbili(
 def generate_tokens_mbili(model, prefix_ids, temperature=1.0, top_k=None):
     assert prefix_ids.shape[1] > 0, "Need at least one start token"
     inp = prefix_ids
-    h = None
+    
+    # Initialize hidden states based on model architecture
+    if hasattr(model, 'rnn') and isinstance(model.rnn, minlstm.MinLSTM):
+        h = None
+        c = None
+        is_lstm = True
+    else:
+        h = None
+        is_lstm = False
+        
     all_probs = [] # Store all probabilities
 
     try:
         while True:
-            logits, h = model.forward(inp, h)
+            if is_lstm:
+                logits, (h, c) = model.forward(inp, h, c)
+            else:
+                logits, h = model.forward(inp, h)
+                
             logits = logits[:, -1, :] / temperature
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
@@ -360,18 +403,34 @@ def generate_tokens_mbili(model, prefix_ids, temperature=1.0, top_k=None):
 def generate_tokens(model, prefix_ids, temperature=1.0, top_k=None):
     assert prefix_ids.shape[1] > 0, "Need at least one start token"
     inp = prefix_ids
-    h = None
+    
+    # Initialize hidden states based on model architecture
+    if hasattr(model, 'rnn') and isinstance(model.rnn, minlstm.MinLSTM):
+        h = None
+        c = None
+        is_lstm = True
+    else:
+        h = None
+        is_lstm = False
 
-    while True:
-        logits, h = model.forward(inp, h)
-        logits = logits[:, -1, :] / temperature
-        if top_k is not None:
-            v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-            logits[logits < v[:, [-1]]] = -float("Inf")
-        probs = F.softmax(logits, dim=-1)
-        idx_next = torch.multinomial(probs, num_samples=1)
-        yield idx_next
-        inp = idx_next
+    try:
+        while True:
+            if is_lstm:
+                logits, (h, c) = model.forward(inp, h, c)
+            else:
+                logits, h = model.forward(inp, h)
+                
+            logits = logits[:, -1, :] / temperature
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = -float("Inf")
+            probs = F.softmax(logits, dim=-1)
+            idx_next = torch.multinomial(probs, num_samples=1)
+            yield idx_next
+            inp = idx_next
+    except Exception as e:
+        _logger.error(f"Error in generate_tokens: {str(e)}")
+        yield torch.zeros_like(prefix_ids[:, :1])
 
 
 @torch.no_grad()
