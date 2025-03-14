@@ -236,10 +236,10 @@ def train(cfg):
                 h_input = detached_h_state if detached_h_state else None
                 c_input = detached_c_state if detached_c_state else None
                 y_hat, hidden_state = model.forward(x, h_input, c_input)
-                # Unpack and detach hidden states
-                h_state, c_state = hidden_state
-                detached_h_state = detach_tensors_in_list(h_state)
-                detached_c_state = detach_tensors_in_list(c_state)
+                # Detach the entire hidden state tuple
+                detached_hidden_state = detach_tensors_in_list(hidden_state)
+                # Unpack for next iteration
+                detached_h_state, detached_c_state = detached_hidden_state
             else:  # minGRU
                 y_hat, hidden_state = model.forward(x, detached_hidden_state if detached_hidden_state != [] else None)
                 detached_hidden_state = detach_tensors_in_list(hidden_state)
@@ -407,9 +407,12 @@ def generate_tokens_mbili(model, prefix_ids, temperature=1.0, top_k=None):
     try:
         while True:
             if is_lstm:
+                # For MinLSTM, pass both h and c
                 logits, hidden_state = model.forward(inp, h, c)
-                h, c = hidden_state  # Unpack the tuple
+                # Unpack for next iteration
+                h, c = hidden_state
             else:
+                # For MinGRU, just pass h
                 logits, h = model.forward(inp, h)
                 
             logits = logits[:, -1, :] / temperature
@@ -445,9 +448,12 @@ def generate_tokens(model, prefix_ids, temperature=1.0, top_k=None):
     try:
         while True:
             if is_lstm:
+                # For MinLSTM, pass both h and c
                 logits, hidden_state = model.forward(inp, h, c)
-                h, c = hidden_state  # Unpack the tuple
+                # Unpack for next iteration
+                h, c = hidden_state
             else:
+                # For MinGRU, just pass h
                 logits, h = model.forward(inp, h)
                 
             logits = logits[:, -1, :] / temperature

@@ -39,15 +39,42 @@ def splitFileThenWrite(path: str, split_percentage: int):
         print("I am not authorized to overwrite files...!")
 
 
-def detach_tensors_in_list(the_tensor_lst):
+def detach_tensors_in_list(the_tensor_container):
+    """Detach tensors from computation graph.
+    
+    This function handles tensors in lists or tuples, making it compatible with both
+    MinGRU (which uses lists) and MinLSTM (which uses tuples of lists).
+    
+    Args:
+        the_tensor_container: A list or tuple of tensors, or a single tensor
+        
+    Returns:
+        Container of the same type with detached tensors
+    """
     f_name = inspect.stack()[0][3]
-    ndx = 0
-    result = []
-    for the_state in the_tensor_lst:
-        #print( "State {0} is {1}".format(ndx, the_state) )
-        result.append(the_state.detach().clone())
-        ndx += 1
-    return result
+    
+    # Handle None case
+    if the_tensor_container is None:
+        return None
+        
+    # Handle single tensor case
+    if torch.is_tensor(the_tensor_container):
+        return the_tensor_container.detach().clone()
+        
+    # Handle tuple case (for MinLSTM which returns (h, c))
+    if isinstance(the_tensor_container, tuple):
+        return tuple(detach_tensors_in_list(item) for item in the_tensor_container)
+    
+    # Handle list case (for both MinGRU and elements of MinLSTM's tuple)
+    if isinstance(the_tensor_container, list):
+        result = []
+        for ndx, the_state in enumerate(the_tensor_container):
+            #print("State {0} is {1}".format(ndx, the_state))
+            result.append(the_state.detach().clone())
+        return result
+        
+    # If we get here, we have an unsupported type
+    raise TypeError(f"Unsupported container type: {type(the_tensor_container)}")
 
 
 '''
