@@ -144,9 +144,9 @@ if __name__ == "__main__":
     )
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("model", help="Path to model checkpoint file")
+    parser.add_argument("model", help="Path to model checkpoint file or glob pattern if --batch is used")
     parser.add_argument("testfile", help="Path to text file for testing")
-    parser.add_argument("--sample-size", type=int, default=32, 
+    parser.add_argument("--sample-size", type=int, default=256, 
                        help="Number of tokens to use as input for generation")
     parser.add_argument("--wandb", type=bool, default=False,
                        help="Enable wandb logging")

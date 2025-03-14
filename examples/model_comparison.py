@@ -8,11 +8,27 @@ import logging
 from logging.handlers import RotatingFileHandler
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import tiktoken
 import torch
 from pathlib import Path
-import wandb
+import sys
+
+# Try to import matplotlib, provide helpful error if not available
+try:
+    import matplotlib.pyplot as plt
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
+    print("Warning: matplotlib not installed. Visualization features will be disabled.")
+    print("To install matplotlib, run: pip install matplotlib")
+
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+    print("Warning: wandb not installed. Logging features will be disabled.")
+    print("To install wandb, run: pip install wandb")
 from examples.nlp import generate_text_mbili
 from examples.cross_validation import cross_validate_generation
 
@@ -32,7 +48,7 @@ def compare_models(model_paths, test_file, sample_size, use_wandb=False):
     Returns:
         DataFrame with model comparison results
     """
-    if use_wandb:
+    if use_wandb and WANDB_AVAILABLE:
         wandb.init(
             project="MinRNN Model Comparison",
             name=f"Model Comparison - Sample size {sample_size}",
@@ -42,6 +58,8 @@ def compare_models(model_paths, test_file, sample_size, use_wandb=False):
                 "sample_size": sample_size
             }
         )
+    elif use_wandb and not WANDB_AVAILABLE:
+        print("Warning: wandb logging requested but wandb is not installed")
     
     results = []
     
@@ -85,7 +103,7 @@ def compare_models(model_paths, test_file, sample_size, use_wandb=False):
             "max_perplexity": max_perplexity
         })
         
-        if use_wandb:
+        if use_wandb and WANDB_AVAILABLE:
             wandb.log({
                 "model": model_name,
                 "architecture": arch,
@@ -103,17 +121,19 @@ def compare_models(model_paths, test_file, sample_size, use_wandb=False):
     _logger.info("\nModel Comparison Results:")
     _logger.info(df.to_string())
     
-    # Create visualization
-    plot_comparison(df)
+    # Create visualization if matplotlib is available
+    if MATPLOTLIB_AVAILABLE:
+        plot_comparison(df)
     
-    if use_wandb:
+    if use_wandb and WANDB_AVAILABLE:
         # Log the table
         wandb.log({"comparison_table": wandb.Table(dataframe=df)})
         
-        # Log the plot
-        fig = plot_comparison(df, show=False)
-        wandb.log({"comparison_plot": wandb.Image(fig)})
-        plt.close(fig)
+        # Log the plot if matplotlib is available
+        if MATPLOTLIB_AVAILABLE:
+            fig = plot_comparison(df, show=False)
+            wandb.log({"comparison_plot": wandb.Image(fig)})
+            plt.close(fig)
         
         wandb.finish()
     
@@ -127,8 +147,12 @@ def plot_comparison(df, show=True):
         show: Whether to display the plot
         
     Returns:
-        The matplotlib figure
+        The matplotlib figure or None if matplotlib is not available
     """
+    if not MATPLOTLIB_AVAILABLE:
+        print("Cannot create plot: matplotlib is not installed")
+        return None
+        
     fig, ax = plt.subplots(figsize=(12, 6))
     
     # Create bar chart
@@ -181,7 +205,7 @@ if __name__ == "__main__":
                        help="Paths to model checkpoint files")
     parser.add_argument("--testfile", required=True,
                        help="Path to text file for testing")
-    parser.add_argument("--sample-size", type=int, default=32, 
+    parser.add_argument("--sample-size", type=int, default=256, 
                        help="Number of tokens to use as input for generation")
     parser.add_argument("--wandb", type=bool, default=False,
                        help="Enable wandb logging")
