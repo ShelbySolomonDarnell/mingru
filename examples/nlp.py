@@ -132,14 +132,15 @@ class NLPModel(torch.nn.Module):
         
         # Handle different RNN architectures
         if is_lstm:
-            # MinLSTM expects h and c together as a tuple
+            # For TorchScript compatibility, we need to handle the case differently
             if h is not None and c is not None:
-                # Pass both hidden states as a tuple
-                x, hidden_state = self.rnn(x, (h, c))
+                # We need to pass h and c separately to avoid type errors with TorchScript
+                x, h_out, c_out = self.rnn.forward_with_separate_states(x, h, c)
+                hidden_state = (h_out, c_out)
             else:
                 # Let the RNN initialize the hidden states
                 x, hidden_state = self.rnn(x)
-            
+                
             # Ensure hidden_state is always a tuple of (h, c)
             if not isinstance(hidden_state, tuple):
                 # For TorchScript compatibility, avoid logging
@@ -258,26 +259,21 @@ def train(cfg):
                     
             # Forward pass with appropriate hidden state handling
             if is_lstm:
-                # For MinLSTM, pass h and c together
-                h_input = detached_h_state if detached_h_state else None
-                c_input = detached_c_state if detached_c_state else None
-                y_hat, hidden_state = model.forward(x, h_input, c_input)
-                
-                # Ensure hidden_state is a tuple before detaching
-                if not isinstance(hidden_state, tuple):
-                    # For TorchScript compatibility, avoid logging
-                    if isinstance(hidden_state, list) and len(hidden_state) >= 2:
-                        # Split the list in half for h and c if needed
-                        mid = len(hidden_state) // 2
-                        hidden_state = (hidden_state[:mid], hidden_state[mid:])
-                    else:
-                        # Create a default format if we can't determine the structure
-                        hidden_state = (hidden_state, hidden_state) if torch.is_tensor(hidden_state) else ([], [])
-                
-                # Detach the entire hidden state tuple
-                detached_hidden_state = detach_tensors_in_list(hidden_state)
-                # Unpack for next iteration
-                detached_h_state, detached_c_state = detached_hidden_state
+                if detached_h_state and detached_c_state:
+                    # Use the separate states method for MinLSTM
+                    x_emb = model.emb(x)
+                    rnn_out, h_out, c_out = model.rnn.forward_with_separate_states(x_emb, detached_h_state, detached_c_state)
+                    y_hat = model.fc(model.ln(rnn_out))
+                    # Detach states for next iteration
+                    detached_h_state = detach_tensors_in_list(h_out)
+                    detached_c_state = detach_tensors_in_list(c_out)
+                else:
+                    # First iteration, let the model initialize states
+                    y_hat, hidden_state = model.forward(x)
+                    # Unpack and detach
+                    h_state, c_state = hidden_state
+                    detached_h_state = detach_tensors_in_list(h_state)
+                    detached_c_state = detach_tensors_in_list(c_state)
             else:  # minGRU
                 y_hat, hidden_state = model.forward(x, detached_hidden_state if detached_hidden_state != [] else None)
                 
@@ -447,10 +443,14 @@ def generate_tokens_mbili(model, prefix_ids, temperature=1.0, top_k=None):
     try:
         while True:
             if is_lstm:
-                # For MinLSTM, pass both h and c
-                logits, hidden_state = model.forward(inp, h, c)
-                # Unpack for next iteration
-                h, c = hidden_state
+                # For MinLSTM, use the separate states method
+                if h is not None and c is not None:
+                    logits, h, c = model.rnn.forward_with_separate_states(model.emb(inp), h, c)
+                    logits = model.fc(model.ln(logits))
+                else:
+                    # First call, initialize states
+                    logits, hidden_state = model.forward(inp)
+                    h, c = hidden_state
             else:
                 # For MinGRU, just pass h
                 logits, h = model.forward(inp, h)
@@ -486,10 +486,14 @@ def generate_tokens(model, prefix_ids, temperature=1.0, top_k=None):
     try:
         while True:
             if is_lstm:
-                # For MinLSTM, pass both h and c
-                logits, hidden_state = model.forward(inp, h, c)
-                # Unpack for next iteration
-                h, c = hidden_state
+                # For MinLSTM, use the separate states method
+                if h is not None and c is not None:
+                    logits, h, c = model.rnn.forward_with_separate_states(model.emb(inp), h, c)
+                    logits = model.fc(model.ln(logits))
+                else:
+                    # First call, initialize states
+                    logits, hidden_state = model.forward(inp)
+                    h, c = hidden_state
             else:
                 # For MinGRU, just pass h
                 logits, h = model.forward(inp, h)

@@ -594,3 +594,44 @@ class Bidirectional(MinLSTMBase):
 
 
 __all__ = ["MinLSTMCell", "MinLSTM", "MinConv2dLSTMCell", "MinConv2dLSTM", "Bidirectional"]
+class MinLSTMBase(torch.nn.Module, metaclass=abc.ABCMeta):
+    """Common base interface for all MinLSTM implementations."""
+
+    @abc.abstractmethod
+    @torch.jit.export
+    def init_hidden_state(
+        self,
+        x: torch.Tensor,
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+        """Initialize a 'zero' hidden state."""
+
+    @abc.abstractmethod
+    def forward(
+        self,
+        x: torch.Tensor,
+        hidden: tuple[list[torch.Tensor], list[torch.Tensor]] | None = None,
+    ) -> tuple[torch.Tensor, tuple[list[torch.Tensor], list[torch.Tensor]]]:
+        """Evaluate the MinLSTM."""
+        
+    @torch.jit.export
+    def forward_with_separate_states(
+        self,
+        x: torch.Tensor,
+        h: list[torch.Tensor],
+        c: list[torch.Tensor],
+    ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
+        """Forward pass with separate h and c states for TorchScript compatibility.
+        
+        This method is a wrapper around forward() that takes h and c separately
+        and returns them separately, avoiding TorchScript type issues.
+        
+        Args:
+            x: Input tensor
+            h: Hidden state list
+            c: Cell state list
+            
+        Returns:
+            Tuple of (output, next_h, next_c)
+        """
+        output, (next_h, next_c) = self.forward(x, (h, c))
+        return output, next_h, next_c
