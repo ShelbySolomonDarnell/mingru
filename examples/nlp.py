@@ -299,7 +299,7 @@ def generate_text_mbili(
     num_tokens: int,
     temperature: float = 1.0,
     top_k: int = None,
-) -> str:
+) -> tuple[str, torch.Tensor]:
     enc = tiktoken.get_encoding("gpt2")
     ids = (
         torch.tensor(
@@ -318,9 +318,13 @@ def generate_text_mbili(
     new = torch.cat(generated_tokens, dim=1)
     g_tokens = new.squeeze(0).unsqueeze(1) # reformatted the tokens for calculations
     
-    # Perplexity Calculation
-    log_probs = torch.log(torch.stack(all_probs).gather(2, g_tokens.unsqueeze(2))).squeeze(2)
-    perplexity = torch.exp(-torch.sum(log_probs) / num_tokens)
+    # Perplexity Calculation with error handling
+    try:
+        log_probs = torch.log(torch.stack(all_probs).gather(2, g_tokens.unsqueeze(2))).squeeze(2)
+        perplexity = torch.exp(-torch.sum(log_probs) / num_tokens)
+    except Exception as e:
+        _logger.error(f"Error calculating perplexity: {str(e)}")
+        perplexity = torch.tensor(float('inf'))
 
     return enc.decode(new[0].cpu().tolist()), perplexity
 
@@ -333,16 +337,21 @@ def generate_tokens_mbili(model, prefix_ids, temperature=1.0, top_k=None):
     h = None
     all_probs = [] # Store all probabilities
 
-    while True:
-        logits, h = model.forward(inp, h)
-        logits = logits[:, -1, :] / temperature
-        if top_k is not None:
-            v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-            logits[logits < v[:, [-1]]] = -float("Inf")
-        probs = F.softmax(logits, dim=-1)
-        idx_next = torch.multinomial(probs, num_samples=1)
-        yield idx_next, probs # Yield both token and probabilities
-        inp = idx_next
+    try:
+        while True:
+            logits, h = model.forward(inp, h)
+            logits = logits[:, -1, :] / temperature
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = -float("Inf")
+            probs = F.softmax(logits, dim=-1)
+            idx_next = torch.multinomial(probs, num_samples=1)
+            yield idx_next, probs # Yield both token and probabilities
+            inp = idx_next
+    except Exception as e:
+        _logger.error(f"Error in generate_tokens_mbili: {str(e)}")
+        # Yield a dummy token and probability to avoid breaking the caller
+        yield torch.zeros_like(prefix_ids[:, :1]), torch.ones((1, 1, 50257)) / 50257
 
 
 

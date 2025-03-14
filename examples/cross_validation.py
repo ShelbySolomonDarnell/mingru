@@ -41,11 +41,15 @@ def cross_validate_generation(model_path: str, test_file: str, sample_size: int,
             }
         )
 
-    # Load model
-    model = torch.jit.load(model_path)
-    model.eval()
-    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(dev)
+    # Load model with error handling
+    try:
+        model = torch.jit.load(model_path)
+        model.eval()
+        dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model.to(dev)
+    except Exception as e:
+        _logger.error(f"Failed to load model {model_path}: {str(e)}")
+        return [float('inf')]  # Return infinity perplexity to indicate failure
     
     # Load and tokenize test data
     test_file_path = Path(test_file).expanduser()
@@ -69,16 +73,20 @@ def cross_validate_generation(model_path: str, test_file: str, sample_size: int,
         sample_tokens = tokens[start:end]
         prefix = enc.decode(sample_tokens)
         
-        # Generate text and get perplexity
-        _, perplexity = generate_text_mbili(
-            model, 
-            dev,
-            prefix=prefix,
-            num_tokens=sample_size,
-            top_k=200
-        )
-        
-        perplexities.append(perplexity.item())
+        # Generate text and get perplexity with error handling
+        try:
+            _, perplexity = generate_text_mbili(
+                model, 
+                dev,
+                prefix=prefix,
+                num_tokens=sample_size,
+                top_k=200
+            )
+            
+            perplexities.append(perplexity.item())
+        except Exception as e:
+            _logger.error(f"Error generating text for sample {i+1}: {str(e)}")
+            continue
         _logger.info(f"Sample {i+1}/{num_chunks} - Perplexity: {perplexity:.2f}")
         
         if use_wandb:
