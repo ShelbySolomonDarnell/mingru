@@ -122,15 +122,15 @@ class NLPModel(torch.nn.Module):
         
         # Handle different RNN architectures
         if isinstance(self.rnn, minlstm.MinLSTM):
-            # MinLSTM expects h and c as a tuple of lists
+            # MinLSTM expects h and c together as a tuple
             if h is not None and c is not None:
-                x, (h, c) = self.rnn(x, (h, c))
+                # Pass both hidden states as a tuple
+                x, hidden_state = self.rnn(x, (h, c))
             else:
-                x, h = self.rnn(x, h)
-            hidden_state = (h, c)
+                # Let the RNN initialize the hidden states
+                x, hidden_state = self.rnn(x)
         else:  # MinGRU
-            x, h = self.rnn(x, h)
-            hidden_state = h
+            x, hidden_state = self.rnn(x, h)
             
         x = self.ln(x)
         logits = self.fc(x)
