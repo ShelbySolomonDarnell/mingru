@@ -78,6 +78,9 @@ class NLPModel(torch.nn.Module):
     def __init__(self, cfg):
         super().__init__()
 
+        # Store whether this is an LSTM model for TorchScript compatibility
+        self._is_lstm_model = cfg["arch"] == 'minLSTM'
+        
         self.emb = torch.nn.Embedding(cfg["vocab_size"], cfg["emb_size"])
         self.rnn = minlstm.MinLSTM( 
             input_size=cfg["emb_size"],
@@ -86,7 +89,7 @@ class NLPModel(torch.nn.Module):
             residual=True,
             bias=True,
             norm=cfg["norm"],
-        ) if cfg["arch"]=='minLSTM' else mingru.MinGRU(
+        ) if self._is_lstm_model else mingru.MinGRU(
             input_size=cfg["emb_size"],
             hidden_sizes=cfg["hidden_sizes"],
             dropout=cfg["dropout"],
@@ -95,7 +98,7 @@ class NLPModel(torch.nn.Module):
             norm=cfg["norm"],
         )
 
-        model_bias = True if cfg["arch"]=='minLSTM' else False
+        model_bias = True if self._is_lstm_model else False
         self.ln = torch.nn.LayerNorm(cfg["hidden_sizes"][-1], model_bias)
         self.fc = torch.nn.Linear(cfg["hidden_sizes"][-1], cfg["vocab_size"])
 
@@ -124,8 +127,11 @@ class NLPModel(torch.nn.Module):
         """
         x = self.emb(ids)
         
+        # Use a string attribute check instead of isinstance for TorchScript compatibility
+        is_lstm = hasattr(self, '_is_lstm_model') and self._is_lstm_model
+        
         # Handle different RNN architectures
-        if isinstance(self.rnn, minlstm.MinLSTM):
+        if is_lstm:
             # MinLSTM expects h and c together as a tuple
             if h is not None and c is not None:
                 # Pass both hidden states as a tuple
@@ -133,18 +139,22 @@ class NLPModel(torch.nn.Module):
             else:
                 # Let the RNN initialize the hidden states
                 x, hidden_state = self.rnn(x)
+            
             # Ensure hidden_state is always a tuple of (h, c)
             if not isinstance(hidden_state, tuple):
-                _logger.warning("MinLSTM returned non-tuple hidden state, fixing format")
-                if isinstance(hidden_state, list):
-                    # Split the list in half for h and c if needed
+                # For TorchScript compatibility, avoid logging
+                # Split the list in half for h and c if needed
+                if isinstance(hidden_state, list) and len(hidden_state) >= 2:
                     mid = len(hidden_state) // 2
                     hidden_state = (hidden_state[:mid], hidden_state[mid:])
+                else:
+                    # Create a default format
+                    hidden_state = (hidden_state, hidden_state) if torch.is_tensor(hidden_state) else ([], [])
         else:  # MinGRU
             x, hidden_state = self.rnn(x, h)
+            
             # Ensure hidden_state is always a list for MinGRU
             if not isinstance(hidden_state, list) and hidden_state is not None:
-                _logger.warning("MinGRU returned non-list hidden state, fixing format")
                 hidden_state = [hidden_state] if torch.is_tensor(hidden_state) else list(hidden_state)
             
         x = self.ln(x)
@@ -226,7 +236,8 @@ def train(cfg):
             }
         )
     # Initialize hidden state variables based on architecture
-    if cfg["arch"] == "minLSTM":
+    is_lstm = cfg["arch"] == "minLSTM"
+    if is_lstm:
         detached_h_state = []
         detached_c_state = []
     else:  # minGRU
@@ -239,14 +250,14 @@ def train(cfg):
 
             if (step % (len(dl_train)-1)) == 0:
                 # Reset hidden states at the beginning of each epoch
-                if cfg["arch"] == "minLSTM":
+                if is_lstm:
                     detached_h_state = []
                     detached_c_state = []
                 else:  # minGRU
                     detached_hidden_state = None
                     
             # Forward pass with appropriate hidden state handling
-            if cfg["arch"] == "minLSTM":
+            if is_lstm:
                 # For MinLSTM, pass h and c together
                 h_input = detached_h_state if detached_h_state else None
                 c_input = detached_c_state if detached_c_state else None
@@ -254,8 +265,8 @@ def train(cfg):
                 
                 # Ensure hidden_state is a tuple before detaching
                 if not isinstance(hidden_state, tuple):
-                    _logger.warning("Received non-tuple hidden state from MinLSTM, fixing format")
-                    if isinstance(hidden_state, list):
+                    # For TorchScript compatibility, avoid logging
+                    if isinstance(hidden_state, list) and len(hidden_state) >= 2:
                         # Split the list in half for h and c if needed
                         mid = len(hidden_state) // 2
                         hidden_state = (hidden_state[:mid], hidden_state[mid:])
@@ -272,7 +283,6 @@ def train(cfg):
                 
                 # Ensure hidden_state is a list before detaching
                 if not isinstance(hidden_state, list) and hidden_state is not None:
-                    _logger.warning("Received non-list hidden state from MinGRU, fixing format")
                     hidden_state = [hidden_state] if torch.is_tensor(hidden_state) else list(hidden_state)
                 
                 detached_hidden_state = detach_tensors_in_list(hidden_state)
@@ -427,14 +437,11 @@ def generate_tokens_mbili(model, prefix_ids, temperature=1.0, top_k=None):
     inp = prefix_ids
     
     # Initialize hidden states based on model architecture
-    if hasattr(model, 'rnn') and isinstance(model.rnn, minlstm.MinLSTM):
-        h = None
-        c = None
-        is_lstm = True
-    else:
-        h = None
-        is_lstm = False
-        
+    # Use a direct attribute check instead of isinstance for TorchScript compatibility
+    is_lstm = hasattr(model, '_is_lstm_model') and model._is_lstm_model
+    
+    h = None
+    c = None if not is_lstm else None
     all_probs = [] # Store all probabilities
 
     try:
@@ -470,13 +477,11 @@ def generate_tokens(model, prefix_ids, temperature=1.0, top_k=None):
     inp = prefix_ids
     
     # Initialize hidden states based on model architecture
-    if hasattr(model, 'rnn') and isinstance(model.rnn, minlstm.MinLSTM):
-        h = None
-        c = None
-        is_lstm = True
-    else:
-        h = None
-        is_lstm = False
+    # Use a direct attribute check instead of isinstance for TorchScript compatibility
+    is_lstm = hasattr(model, '_is_lstm_model') and model._is_lstm_model
+    
+    h = None
+    c = None if not is_lstm else None
 
     try:
         while True:
