@@ -72,7 +72,7 @@ def detach_tensors_in_list(the_tensor_container):
     # Handle list case (for both MinGRU and elements of MinLSTM's tuple)
     if isinstance(the_tensor_container, list):
         list_length = len(the_tensor_container)
-        print(f"[{f_name}] Processing list with length: {list_length}")
+        #print(f"[{f_name}] Processing list with length: {list_length}")
         
         # Preserve list structure exactly
         result = []
