@@ -24,16 +24,39 @@ class MinLSTMBase(torch.nn.Module, metaclass=abc.ABCMeta):
     def init_hidden_state(
         self,
         x: torch.Tensor,
-    ) -> list[torch.Tensor]:
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         """Initialize a 'zero' hidden state."""
 
     @abc.abstractmethod
     def forward(
         self,
         x: torch.Tensor,
-        h: list[torch.Tensor] | None = None,
-    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        h: tuple[list[torch.Tensor], list[torch.Tensor]] | None = None,
+    ) -> tuple[torch.Tensor, tuple[list[torch.Tensor], list[torch.Tensor]]]:
         """Evaluate the MinLSTM."""
+        
+    @torch.jit.export
+    def forward_with_separate_states(
+        self,
+        x: torch.Tensor,
+        h: list[torch.Tensor],
+        c: list[torch.Tensor],
+    ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
+        """Forward pass with separate h and c states for TorchScript compatibility.
+        
+        This method is a wrapper around forward() that takes h and c separately
+        and returns them separately, avoiding TorchScript type issues.
+        
+        Args:
+            x: Input tensor
+            h: Hidden state list
+            c: Cell state list
+            
+        Returns:
+            Tuple of (output, next_h, next_c)
+        """
+        output, (next_h, next_c) = self.forward(x, (h, c))
+        return output, next_h, next_c
 
 
 class MinLSTMCell(MinLSTMBase):
@@ -193,42 +216,44 @@ class MinLSTM(MinLSTMBase):
     def forward(
         self,
         x: torch.Tensor,
-        h: list[torch.Tensor] | None = None,
-    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        h: tuple[list[torch.Tensor], list[torch.Tensor]] | None = None,
+    ) -> tuple[torch.Tensor, tuple[list[torch.Tensor], list[torch.Tensor]]]:
         """Evaluate the MinLSTM.
 
         Params:
             x: (B,S,input_size) input features
-            h: optional list of tensors with shape (B,1,hidden_sizes[i])
-                containing previous hidden states.
+            h: optional tuple of (h_states, c_states) where each is a list of tensors
+               with shape (B,1,hidden_sizes[i]) containing previous hidden states.
 
         Returns:
             out: (B,S,hidden_sizes[-1]) outputs of the last layer
-            h': list of tensors with shape (B,1,hidden_sizes[i]) containing
-                next hidden states per layer.
+            h': tuple of (h_states, c_states) where each is a list of tensors
+                with shape (B,1,hidden_sizes[i]) containing next hidden states per layer.
         """
         assert (
             x.ndim == 3 and x.shape[2] == self.layer_sizes[0]
         ), "x should be (B,S,input_size)"
 
         if h is None:
-            h = self.init_hidden_state(x)
+            h_states, c_states = self.init_hidden_state(x)
+        else:
+            h_states, c_states = h
 
         # input to next layer
-        inp         = x
-        next_hidden = []
+        inp = x
+        next_h_states = []
+        next_c_states = []
 
         # hidden states across layers
         for lidx, layer in enumerate(self.layers):
             # Get previous hidden and cell states
-            h_prev = h[lidx] if lidx < len(h) else None
+            h_prev = h_states[lidx] if lidx < len(h_states) else None
+            c_prev = c_states[lidx] if lidx < len(c_states) else None
             
             # Initialize if not available
-            if h_prev is None:
-                h_prev = [
-                    mF.g(inp.new_zeros(inp.shape[0], 1, self.layer_sizes[lidx+1])),
-                    inp.new_zeros(inp.shape[0], 1, self.layer_sizes[lidx+1])
-                ]
+            if h_prev is None or c_prev is None:
+                h_prev = mF.g(inp.new_zeros(inp.shape[0], 1, self.layer_sizes[lidx+1]))
+                c_prev = inp.new_zeros(inp.shape[0], 1, self.layer_sizes[lidx+1])
                 
             # Split into input gate, forget gate, output gate, and cell state
             gates_and_cell = layer.gate_hidden(layer.norm(inp))
@@ -240,10 +265,11 @@ class MinLSTM(MinLSTMBase):
                 forget_gate, 
                 output_gate, 
                 cell_state, 
-                h_prev[0],  # hidden state
-                h_prev[1]   # cell state
+                h_prev,  # hidden state
+                c_prev   # cell state
             )
-            next_hidden.append([out[:, -1:], c_next[:, -1:]])
+            next_h_states.append(out[:, -1:])
+            next_c_states.append(c_next[:, -1:])
 
             # Add skip connection
             if self.residual:
@@ -252,21 +278,22 @@ class MinLSTM(MinLSTMBase):
             out = layer.dropout(out)
             inp = out
 
-        return out, next_hidden
+        return out, (next_h_states, next_c_states)
 
     def init_hidden_state(self, x: torch.Tensor) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         """Returns a tuple of lists of 'zero' hidden and cell states for each layer."""
 
         batch_size = x.shape[0]
-        return [
-            [
-                # Hidden state (h)
-                torch.zeros(batch_size, 1, hidden_size, device=x.device, dtype=x.dtype),
-                # Cell state (c)
-                torch.zeros(batch_size, 1, hidden_size, device=x.device, dtype=x.dtype)
-            ]
-            for hidden_size in self.layer_sizes[1:]
-        ]
+        h_states = []
+        c_states = []
+        
+        for hidden_size in self.layer_sizes[1:]:
+            # Hidden state (h)
+            h_states.append(torch.zeros(batch_size, 1, hidden_size, device=x.device, dtype=x.dtype))
+            # Cell state (c)
+            c_states.append(torch.zeros(batch_size, 1, hidden_size, device=x.device, dtype=x.dtype))
+            
+        return h_states, c_states
 
 
 class MinConv2dLSTMCell(MinLSTMBase):
@@ -603,44 +630,4 @@ class Bidirectional(MinLSTMBase):
 
 
 __all__ = ["MinLSTMCell", "MinLSTM", "MinConv2dLSTMCell", "MinConv2dLSTM", "Bidirectional"]
-class MinLSTMBase(torch.nn.Module, metaclass=abc.ABCMeta):
-    """Common base interface for all MinLSTM implementations."""
-
-    @abc.abstractmethod
-    @torch.jit.export
-    def init_hidden_state(
-        self,
-        x: torch.Tensor,
-    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-        """Initialize a 'zero' hidden state."""
-
-    @abc.abstractmethod
-    def forward(
-        self,
-        x: torch.Tensor,
-        hidden: tuple[list[torch.Tensor], list[torch.Tensor]] | None = None,
-    ) -> tuple[torch.Tensor, tuple[list[torch.Tensor], list[torch.Tensor]]]:
-        """Evaluate the MinLSTM."""
-        
-    @torch.jit.export
-    def forward_with_separate_states(
-        self,
-        x: torch.Tensor,
-        h: list[torch.Tensor],
-        c: list[torch.Tensor],
-    ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
-        """Forward pass with separate h and c states for TorchScript compatibility.
-        
-        This method is a wrapper around forward() that takes h and c separately
-        and returns them separately, avoiding TorchScript type issues.
-        
-        Args:
-            x: Input tensor
-            h: Hidden state list
-            c: Cell state list
-            
-        Returns:
-            Tuple of (output, next_h, next_c)
-        """
-        output, (next_h, next_c) = self.forward(x, (h, c))
-        return output, next_h, next_c
+# This is a duplicate class definition at the end of the file - removing it

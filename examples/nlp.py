@@ -209,9 +209,13 @@ class NLPModel(torch.nn.Module):
         if is_lstm:
             # For TorchScript compatibility, we need to handle the case differently
             if h is not None and c is not None:
-                # We need to pass h and c separately to avoid type errors with TorchScript
-                x, h_out, c_out = self.rnn.forward_with_separate_states(x, h, c)
-                hidden_state = (h_out, c_out)
+                try:
+                    # Try using forward_with_separate_states if available
+                    x, h_out, c_out = self.rnn.forward_with_separate_states(x, h, c)
+                    hidden_state = (h_out, c_out)
+                except AttributeError:
+                    # Fall back to regular forward if the method is not available
+                    x, hidden_state = self.rnn(x, (h, c))
             else:
                 # Let the RNN initialize the hidden states
                 x, hidden_state = self.rnn(x)
@@ -341,8 +345,15 @@ def train(cfg):
                 if detached_h_state and detached_c_state:
                     # Use the separate states method for MinLSTM
                     x_emb = model.emb(x)
-                    rnn_out, h_out, c_out = model.rnn.forward_with_separate_states(x_emb, detached_h_state, detached_c_state)
-                    y_hat = model.fc(model.ln(rnn_out))
+                    try:
+                        # Try using forward_with_separate_states if available
+                        rnn_out, h_out, c_out = model.rnn.forward_with_separate_states(x_emb, detached_h_state, detached_c_state)
+                        y_hat = model.fc(model.ln(rnn_out))
+                    except AttributeError:
+                        # Fall back to regular forward if the method is not available
+                        rnn_out, (h_out, c_out) = model.rnn(x_emb, (detached_h_state, detached_c_state))
+                        y_hat = model.fc(model.ln(rnn_out))
+                    
                     # Detach states for next iteration
                     detached_h_state = detach_tensors_in_list(h_out)
                     detached_c_state = detach_tensors_in_list(c_out)
@@ -540,8 +551,14 @@ def generate_tokens_mbili(model, prefix_ids, temperature=1.0, top_k=None):
             if is_lstm:
                 # For MinLSTM, use the separate states method
                 if h is not None and c is not None:
-                    logits, h, c = model.rnn.forward_with_separate_states(model.emb(inp), h, c)
-                    logits = model.fc(model.ln(logits))
+                    try:
+                        # Try using forward_with_separate_states if available
+                        logits, h, c = model.rnn.forward_with_separate_states(model.emb(inp), h, c)
+                        logits = model.fc(model.ln(logits))
+                    except AttributeError:
+                        # Fall back to regular forward if the method is not available
+                        rnn_out, (h, c) = model.rnn(model.emb(inp), (h, c))
+                        logits = model.fc(model.ln(rnn_out))
                 else:
                     # First call, initialize states
                     logits, hidden_state = model.forward(inp)
@@ -588,8 +605,14 @@ def generate_tokens(model, prefix_ids, temperature=1.0, top_k=None):
             if is_lstm:
                 # For MinLSTM, use the separate states method
                 if h is not None and c is not None:
-                    logits, h, c = model.rnn.forward_with_separate_states(model.emb(inp), h, c)
-                    logits = model.fc(model.ln(logits))
+                    try:
+                        # Try using forward_with_separate_states if available
+                        logits, h, c = model.rnn.forward_with_separate_states(model.emb(inp), h, c)
+                        logits = model.fc(model.ln(logits))
+                    except AttributeError:
+                        # Fall back to regular forward if the method is not available
+                        rnn_out, (h, c) = model.rnn(model.emb(inp), (h, c))
+                        logits = model.fc(model.ln(rnn_out))
                 else:
                     # First call, initialize states
                     logits, hidden_state = model.forward(inp)
