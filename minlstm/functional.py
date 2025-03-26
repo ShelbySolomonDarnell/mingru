@@ -89,18 +89,32 @@ def _minlstm_parallel(
         h: (B,S,hidden_dims,*) hidden states
         c: (B,S,hidden_dims,*) cell states
     """
-    diff = F.softplus(-forget_gate) - F.softplus(-input_gate)
-    log_f = -F.softplus(diff)
-    log_i = -F.softplus(-diff)
-    log_c_0 = c.log()
-
-    log_tilde_c = torch.tanh(cell_state).log()
-    c_next = parallel_scan_log(
-        log_f, 
-        torch.cat([log_c_0, log_i + log_tilde_c], dim=1))
-    c_next = c_next[:, 1:]  # tail
+    # Clamp inputs to prevent extreme values
+    input_gate = torch.clamp(input_gate, -10, 10)
+    forget_gate = torch.clamp(forget_gate, -10, 10)
+    output_gate = torch.clamp(output_gate, -10, 10)
+    cell_state = torch.clamp(cell_state, -10, 10)
     
-    h_next = torch.sigmoid(output_gate) * torch.tanh(c_next)
+    # Use standard LSTM update equations instead of log-space for stability
+    i_t = torch.sigmoid(input_gate)
+    f_t = torch.sigmoid(forget_gate)
+    o_t = torch.sigmoid(output_gate)
+    c_tilde = torch.tanh(cell_state)
+    
+    # Initialize output tensors
+    batch_size, seq_len = input_gate.shape[:2]
+    c_next = torch.zeros_like(input_gate)
+    h_next = torch.zeros_like(input_gate)
+    
+    # Process the sequence step by step
+    c_t = c
+    for t in range(seq_len):
+        c_t = f_t[:, t:t+1] * c_t + i_t[:, t:t+1] * c_tilde[:, t:t+1]
+        c_t = torch.clamp(c_t, -10, 10)  # Prevent exploding values
+        h_t = o_t[:, t:t+1] * torch.tanh(c_t)
+        
+        c_next[:, t:t+1] = c_t
+        h_next[:, t:t+1] = h_t
     
     return h_next, c_next
 
@@ -145,12 +159,17 @@ def _minlstm_sequential(
         h: (B,1,hidden_dims,*) next hidden state
         c: (B,1,hidden_dims,*) next cell state
     """
-    i_t = torch.sigmoid(input_gate)
-    f_t = torch.sigmoid(forget_gate)
-    o_t = torch.sigmoid(output_gate)
-    c_tilde = torch.tanh(cell_state)
+    # Apply sigmoid with gradient clipping to avoid NaN values
+    i_t = torch.sigmoid(torch.clamp(input_gate, -10, 10))
+    f_t = torch.sigmoid(torch.clamp(forget_gate, -10, 10))
+    o_t = torch.sigmoid(torch.clamp(output_gate, -10, 10))
+    c_tilde = torch.tanh(torch.clamp(cell_state, -10, 10))
     
+    # Update cell state with gradient clipping
     c_next = f_t * c + i_t * c_tilde
+    c_next = torch.clamp(c_next, -10, 10)
+    
+    # Update hidden state
     h_next = o_t * torch.tanh(c_next)
     
     return h_next, c_next

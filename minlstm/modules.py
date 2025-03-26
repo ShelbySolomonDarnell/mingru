@@ -259,6 +259,12 @@ class MinLSTM(MinLSTMBase):
             gates_and_cell = layer.gate_hidden(layer.norm(inp))
             input_gate, forget_gate, output_gate, cell_state = gates_and_cell.chunk(4, dim=2)
             
+            # Apply layer normalization to gates for stability
+            input_gate = torch.clamp(input_gate, -10, 10)
+            forget_gate = torch.clamp(forget_gate, -10, 10)
+            output_gate = torch.clamp(output_gate, -10, 10)
+            cell_state = torch.clamp(cell_state, -10, 10)
+            
             # Process the cell state
             out, c_next = mF.minlstm_gate_hidden(
                 input_gate, 

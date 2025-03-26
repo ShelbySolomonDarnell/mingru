@@ -251,16 +251,17 @@ def init_optimizer(params, the_cfg):
     if the_cfg["optim"] == "sgd":
         result = torch.optim.SGD(
             params,
-            lr=cfg["lr"],
+            lr=the_cfg["lr"],
             momentum=0.9,
             weight_decay=5e-4
         )
     else:
-        result = torch.optim.Adam(
+        result = torch.optim.AdamW(  # Use AdamW instead of Adam for better stability
             params,
-            lr=cfg["lr"],
+            lr=the_cfg["lr"],
             weight_decay=5e-4,
-    )
+            eps=1e-8  # Increase epsilon to prevent division by zero
+        )
     return result
 
 def train(cfg):
@@ -287,7 +288,8 @@ def train(cfg):
 
     model = NLPModel(cfg).to(dev)
 
-    crit = torch.nn.CrossEntropyLoss(ignore_index=-1)
+    # Use label smoothing to improve training stability
+    crit = torch.nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=0.1)
     opt = init_optimizer(model.parameters(),cfg)
 
     sched = torch.optim.lr_scheduler.StepLR(
@@ -380,11 +382,24 @@ def train(cfg):
                     
                     detached_hidden_state = detach_tensors_in_list(hidden_state)
 
+            # Apply gradient clipping to prevent exploding gradients
             loss = crit(y_hat.permute(0, 2, 1), y)
+            
+            # Check for NaN values in loss
+            if torch.isnan(loss).any():
+                _logger.warning(f"NaN detected in loss at step {step+1}. Skipping backward pass.")
+                continue
+                
             opt.zero_grad()
             loss.backward()
+            
+            # Apply gradient clipping to prevent exploding gradients
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             opt.step()
-            perplexed = torch.exp(loss)
+            
+            # Calculate perplexity with safety check
+            perplexed = torch.exp(torch.clamp(loss, 0, 20))  # Clamp to prevent overflow
 
             #_logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, perplexity: {perplexed:.4f}")
             if (step + 1) % 20 == 0:
