@@ -9,6 +9,7 @@ from logging.handlers import RotatingFileHandler
 import warnings
 from itertools import islice
 from pathlib import Path
+import os
 
 import sys
 import json
@@ -102,6 +103,80 @@ class NLPModel(torch.nn.Module):
         self.ln = torch.nn.LayerNorm(cfg["hidden_sizes"][-1], model_bias)
         self.fc = torch.nn.Linear(cfg["hidden_sizes"][-1], cfg["vocab_size"])
 
+    def save_model(self, path: str, optimizer=None, epoch=None, metadata=None):
+        """Save model weights and optional training state to a file.
+        
+        This method saves the model in a format that can be easily loaded
+        without relying on TorchScript, which can have compatibility issues.
+        
+        Args:
+            path: Path where to save the model
+            optimizer: Optional optimizer to save state
+            epoch: Optional current epoch number
+            metadata: Optional dictionary with additional metadata
+        """
+        save_dict = {
+            'model_state_dict': self.state_dict(),
+            'arch': 'minLSTM' if self._is_lstm_model else 'minGRU',
+            'hidden_sizes': self.rnn.layer_sizes[1:],
+            'vocab_size': self.emb.num_embeddings,
+            'emb_size': self.emb.embedding_dim
+        }
+        
+        if optimizer is not None:
+            save_dict['optimizer_state_dict'] = optimizer.state_dict()
+        
+        if epoch is not None:
+            save_dict['epoch'] = epoch
+            
+        if metadata is not None:
+            save_dict.update(metadata)
+            
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        
+        # Save the model
+        torch.save(save_dict, path)
+        _logger.info(f"Model saved to {path}")
+    
+    @staticmethod
+    def load_model(path: str, device=None):
+        """Load a model from a saved checkpoint.
+        
+        Args:
+            path: Path to the saved model
+            device: Device to load the model to
+            
+        Returns:
+            Loaded NLPModel instance and optional metadata
+        """
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            
+        checkpoint = torch.load(path, map_location=device)
+        
+        # Create config from saved parameters
+        cfg = {
+            'arch': checkpoint.get('arch', 'minGRU'),
+            'hidden_sizes': checkpoint.get('hidden_sizes', [256, 512, 1024]),
+            'vocab_size': checkpoint.get('vocab_size', 50257),
+            'emb_size': checkpoint.get('emb_size', 768),
+            'dropout': 0.0,  # Default value
+            'norm': True     # Default value
+        }
+        
+        # Create model
+        model = NLPModel(cfg).to(device)
+        
+        # Load state dict
+        model.load_state_dict(checkpoint['model_state_dict'])
+        
+        # Return model and any additional metadata
+        metadata = {k: v for k, v in checkpoint.items() 
+                   if k not in ['model_state_dict', 'optimizer_state_dict']}
+        
+        return model, metadata
+        
     def forward(self, ids: torch.IntTensor, h: list[torch.Tensor] | None = None, c: list[torch.Tensor] | None = None):
         """Forward pass through the NLP model.
         
@@ -311,11 +386,20 @@ def train(cfg):
                 )
                 if val_acc > best_acc:
                     _logger.info(f"New best model at epoch {epoch} step {step+1}")
-                    scripted = torch.jit.script(model)
                     model_name = f"nlp_best.epochs{cfg['num_epochs']}_{cfg['arch']}_hidden{'_'.join(map(str, cfg['hidden_sizes']))}.pt"
-                    torch.jit.save(
-                        scripted,
-                        f"tmp/{model_name}",
+                    model_path = f"tmp/{model_name}"
+                    
+                    # Save model using our custom method
+                    model.save_model(
+                        model_path,
+                        optimizer=opt,
+                        epoch=epoch,
+                        metadata={
+                            'validation_accuracy': val_acc,
+                            'validation_loss': val_loss,
+                            'step': step,
+                            'optimizer': cfg['optim']
+                        }
                     )
                     best_acc = val_acc
                 demo, sample_perplexity = generate_text_mbili(model, dev, prefix="\n", num_tokens=32, top_k=200)
@@ -534,9 +618,21 @@ def generate_tokens(model, prefix_ids, temperature=1.0, top_k=None):
 
 @torch.no_grad()
 def sample(cfg):
-    model = torch.jit.load(cfg["ckpt"])
+    # Try to load with TorchScript first for backward compatibility
+    try:
+        model = torch.jit.load(cfg["ckpt"])
+        _logger.info("Loaded model with TorchScript")
+    except Exception as e:
+        _logger.info(f"TorchScript loading failed: {str(e)}, trying regular loading")
+        # Fall back to our custom loading method
+        model, metadata = NLPModel.load_model(cfg["ckpt"])
+        if metadata:
+            _logger.info(f"Model metadata: {metadata}")
+    
     model.eval()
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(dev)
+    
     output, perplex = generate_text_mbili(model, dev, cfg["precond"], cfg["num_tokens"], top_k=200)
     _logger.info(f"Sample perplexity is {perplex}")
     print("[Sampling perplexity] {0}\n{1}\n".format(perplex, output))

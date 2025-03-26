@@ -88,7 +88,8 @@ def extract_model_info(model_name):
 def load_model_from_checkpoint(model_path):
     """Load a model from a checkpoint file without using TorchScript.
     
-    This is a fallback method when TorchScript models fail to load.
+    This function uses the NLPModel's built-in loading method when possible,
+    with fallbacks for older model formats.
     
     Args:
         model_path: Path to the model checkpoint
@@ -97,6 +98,16 @@ def load_model_from_checkpoint(model_path):
         Loaded model or None if loading fails
     """
     try:
+        # First try using the built-in loading method
+        try:
+            _logger.info(f"Attempting to load model using NLPModel.load_model: {model_path}")
+            model, metadata = NLPModel.load_model(model_path)
+            if metadata:
+                _logger.info(f"Model metadata: {metadata}")
+            return model
+        except Exception as e:
+            _logger.warning(f"Built-in loading failed: {str(e)}, trying alternative methods")
+        
         # Extract model configuration from filename
         model_name = Path(model_path).stem
         
@@ -153,6 +164,8 @@ def load_model_from_checkpoint(model_path):
             checkpoint = torch.load(model_path, map_location='cpu')
             if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
                 model.load_state_dict(checkpoint['state_dict'], strict=False)
+            elif isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'], strict=False)
             else:
                 model.load_state_dict(checkpoint, strict=False)
             _logger.info("Successfully loaded model from checkpoint")
