@@ -156,9 +156,14 @@ class NLPModel(torch.nn.Module):
         checkpoint = torch.load(path, map_location=device)
         
         # Create config from saved parameters
+        hidden_sizes = checkpoint.get('hidden_sizes', [256, 512, 1024])
+        # Ensure hidden_sizes is a list
+        if isinstance(hidden_sizes, tuple):
+            hidden_sizes = list(hidden_sizes)
+            
         cfg = {
             'arch': checkpoint.get('arch', 'minGRU'),
-            'hidden_sizes': checkpoint.get('hidden_sizes', [256, 512, 1024]),
+            'hidden_sizes': hidden_sizes,
             'vocab_size': checkpoint.get('vocab_size', 50257),
             'emb_size': checkpoint.get('emb_size', 768),
             'dropout': 0.0,  # Default value
@@ -662,10 +667,15 @@ def sample(cfg):
         _logger.info("Loaded model with TorchScript")
     except Exception as e:
         _logger.info(f"TorchScript loading failed: {str(e)}, trying regular loading")
-        # Fall back to our custom loading method
-        model, metadata = NLPModel.load_model(cfg["ckpt"])
-        if metadata:
-            _logger.info(f"Model metadata: {metadata}")
+        try:
+            # Fall back to our custom loading method
+            model, metadata = NLPModel.load_model(cfg["ckpt"])
+            if metadata:
+                _logger.info(f"Model metadata: {metadata}")
+        except Exception as e2:
+            _logger.error(f"Failed to load model using both methods: {str(e2)}")
+            print(f"Error: Could not load model from {cfg['ckpt']}. Please check if the file exists and is in the correct format.")
+            return None, None
     
     model.eval()
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -728,7 +738,9 @@ if __name__ == "__main__":
     elif args.cmd == "sample":
         cfg.update(vars(args))
         _logger.info(f"New sampling session with {cfg}")
-        sample(cfg)
+        output, perplex = sample(cfg)
+        if output is None:
+            sys.exit(1)
     else:
         parser.print_help()
         parser.error("too few arguments")

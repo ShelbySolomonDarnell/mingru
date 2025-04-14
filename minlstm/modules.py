@@ -172,7 +172,9 @@ class MinLSTM(MinLSTMBase):
         if isinstance(hidden_sizes, int):
             hidden_sizes = [hidden_sizes]
 
-        # No need for this layer in LSTM implementation
+        # Convert hidden_sizes to list if it's a tuple
+        if isinstance(hidden_sizes, tuple):
+            hidden_sizes = list(hidden_sizes)
         self.layer_sizes = tuple([input_size] + hidden_sizes)
         self.num_layers = len(hidden_sizes)
         self.dropout = max(min(dropout, 1.0), 0.0)
