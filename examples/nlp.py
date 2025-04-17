@@ -262,7 +262,7 @@ def init_optimizer(params, the_cfg):
             weight_decay=5e-4
         )
     else:
-        result = schedulefree.AdamWScheduleFree(params, lr=cfg["lr"])
+        result = schedulefree.AdamWScheduleFree(params, lr=cfg["lr"]) 
         """
         result = torch.optim.AdamW(  # Use AdamW instead of Adam for better stability
             params,
