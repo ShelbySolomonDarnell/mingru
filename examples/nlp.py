@@ -19,6 +19,7 @@ import tiktoken
 import torch
 import mingru
 import minlstm
+import schedulefree
 import torch.nn.functional as F
 import torch.utils.data.dataloader
 from torch.nn import Linear
@@ -261,12 +262,15 @@ def init_optimizer(params, the_cfg):
             weight_decay=5e-4
         )
     else:
+        result = schedulefree.AdamWScheduleFree(params, lr=cfg["lr"])
+        """
         result = torch.optim.AdamW(  # Use AdamW instead of Adam for better stability
             params,
             lr=the_cfg["lr"],
             weight_decay=5e-4,
             eps=1e-8  # Increase epsilon to prevent division by zero
         )
+        """
     return result
 
 def train(cfg):
@@ -291,11 +295,12 @@ def train(cfg):
     _logger.info(f"Number of examples in test dataset {len(ds_val.dataset)}")
     _logger.info(f"Number of batches in test dataset {len(ds_val)}")
 
-    model = NLPModel(cfg).to(dev)
+    model  = NLPModel(cfg).to(dev)
 
     # Use label smoothing to improve training stability
-    crit = torch.nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=0.1)
-    opt = init_optimizer(model.parameters(),cfg)
+    crit   = torch.nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=0.1)
+    opt    = init_optimizer(model.parameters(),cfg)
+    opt.train()
 
     sched = torch.optim.lr_scheduler.StepLR(
         opt,
@@ -395,12 +400,14 @@ def train(cfg):
                 _logger.warning(f"NaN detected in loss at step {step+1}. Skipping backward pass.")
                 continue
                 
+            #opt.zero_grad()
             opt.zero_grad()
             loss.backward()
             
             # Apply gradient clipping to prevent exploding gradients
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             
+            #opt.step()
             opt.step()
             
             # Calculate perplexity with safety check
@@ -439,6 +446,7 @@ def train(cfg):
                 ) if cfg["wandb"] else None
                 _logger.info(f"Sample perplexity: {sample_perplexity}\nSample model output: {demo}")
                 model.train()
+                opt.train()
 
         sched.step()
         detached_hidden_state = []

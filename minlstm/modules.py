@@ -15,7 +15,6 @@ from . import functional as mF
 from torch.nn import Linear 
 from torch.nn.functional import pad
 
-
 class MinLSTMBase(torch.nn.Module, metaclass=abc.ABCMeta):
     """Common base interface for all MinLSTM implementations."""
 
