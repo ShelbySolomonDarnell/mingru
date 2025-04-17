@@ -10,6 +10,8 @@ import torch.nn as nn
 
 def setup(rank, world_size):
     # Initialize the process group
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
     dist.init_process_group("gloo", rank=rank, world_size=world_size)
 
 def cleanup():
@@ -33,8 +35,9 @@ def train(rank, world_size):
     setup(rank, world_size)
     
     # Create model and move it to the corresponding GPU
-    model = SimpleNN().to(rank)
-    ddp_model = DDP(model, device_ids=[rank])
+    device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
+    model = SimpleNN().to(device)
+    ddp_model = DDP(model, device_ids=[rank] if torch.cuda.is_available() else None)
     
     # Use a distributed sampler
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
@@ -43,15 +46,17 @@ def train(rank, world_size):
     train_loader = DataLoader(dataset=train_dataset, batch_size=64, sampler=train_sampler)
     
     # Loss and optimizer
-    criterion = nn.CrossEntropyLoss().to(rank)
+    criterion = nn.CrossEntropyLoss().to(device)
     optimizer = optim.SGD(ddp_model.parameters(), lr=0.01)
     
     # Training loop
     ddp_model.train()
     for epoch in range(2):
+        # Set epoch for sampler
+        train_sampler.set_epoch(epoch)
         epoch_loss = 0.0
         for data, target in train_loader:
-            data, target = data.to(rank), target.to(rank)
+            data, target = data.to(device), target.to(device)
 
             optimizer.zero_grad()
             output = ddp_model(data)
@@ -65,16 +70,20 @@ def train(rank, world_size):
     cleanup()
 
 def main():
-    # Number of GPUs available
-    world_size = int(torch.cuda.device_count()/2) if torch.cuda.device_count()==8 else 4
-    print("World size or available GPUs is {0}".format(world_size))
+    # Check if CUDA is available
+    if not torch.cuda.is_available():
+        print("CUDA is not available. Running on CPU.")
+        world_size = 2  # Use 2 processes on CPU for demonstration
+    else:
+        # Number of GPUs available
+        world_size = min(torch.cuda.device_count(), 4)  # Use at most 4 GPUs
+        print(f"Found {torch.cuda.device_count()} GPUs, using {world_size} for training")
 
     if world_size > 1:
         mp.spawn(train, args=(world_size,), nprocs=world_size, join=True)
     else:
-        print("This example requires at least 2 GPUs to run")
-    """
-    """
+        print("This example requires at least 2 processes to run. Using CPU simulation.")
+        mp.spawn(train, args=(2,), nprocs=2, join=True)
 
 
 if __name__ == "__main__":
