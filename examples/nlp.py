@@ -22,6 +22,10 @@ import minlstm
 import schedulefree
 import torch.nn.functional as F
 import torch.utils.data.dataloader
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 from torch.nn import Linear
 from examples.utils import *
 from examples.utils import cfg as _cfg
@@ -273,8 +277,115 @@ def init_optimizer(params, the_cfg):
         """
     return result
 
-def train(cfg):
+def setup_ddp(rank, world_size):
+    """Initialize the distributed environment."""
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
 
+def cleanup_ddp():
+    """Clean up the distributed environment."""
+    dist.destroy_process_group()
+
+def train_distributed(rank, world_size, cfg):
+    """Train the model in a distributed setting."""
+    # Set up the distributed environment
+    setup_ddp(rank, world_size)
+    
+    # Set device for this process
+    device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
+    
+    # Create dataset and distributed sampler
+    ds_train, ds_val = TokenIdDataset.from_textfile(cfg["textfile"], cfg["seqlen"])
+    
+    # Use DistributedSampler for training data
+    train_sampler = DistributedSampler(
+        ds_train, 
+        num_replicas=world_size, 
+        rank=rank,
+        shuffle=True
+    )
+    
+    dl_train = torch.utils.data.DataLoader(
+        ds_train,
+        batch_size=cfg["batch_size"],
+        sampler=train_sampler,
+        num_workers=2,
+        pin_memory=True
+    )
+
+    if rank == 0:
+        _logger.info(f"Number of examples in dataset {len(dl_train.dataset)}")
+        _logger.info(f"Number of batches in dataset {len(dl_train)}")
+
+    # For validation, we'll use a subset on rank 0 only
+    if rank == 0:
+        ds_val = torch.utils.data.Subset(
+            ds_val, np.random.choice(len(ds_val), 256, replace=False)
+        )
+        _logger.info(f"Number of examples in test dataset {len(ds_val.dataset)}")
+        _logger.info(f"Number of batches in test dataset {len(ds_val)}")
+    
+    # Create model and move to device
+    model = NLPModel(cfg).to(device)
+    
+    # Wrap model with DDP
+    model = DDP(model, device_ids=[rank] if torch.cuda.is_available() else None)
+    
+    # Use label smoothing to improve training stability
+    crit = torch.nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=0.1)
+    opt = init_optimizer(model.parameters(), cfg)
+    opt.train()
+
+    sched = torch.optim.lr_scheduler.StepLR(
+        opt,
+        cfg["num_epochs"] - 2,
+        gamma=0.1,
+    )
+
+    best_acc = 0  # Start with 0 since we're tracking accuracy (0-1)
+    if rank == 0 and cfg["wandb"]:
+        wandb.init(
+            # Set the project where this run will be logged
+            project=cfg['arch'] + " Shakespeare training",
+            name=f"{cfg['arch']} epochs {cfg['num_epochs']}, optimizer {cfg['optim']}, hidden_sizes {cfg['hidden_sizes']} DDP-{world_size}GPUs",
+            # Track hyper parameters and run metadata
+            config={
+                "architecture":    cfg["arch"],
+                "learning_rate":   cfg["lr"],
+                "batch_size":      cfg["batch_size"],
+                "dropout":         cfg["dropout"],
+                "dataset":         cfg["dataset"],
+                "epochs":          cfg["num_epochs"],
+                "sequence_length": cfg["seqlen"],
+                "vocabulary_size": cfg["vocab_size"],
+                "embedding_size":  cfg["emb_size"],
+                "normalize":       cfg["norm"],
+                "hidden_sizes":    cfg["hidden_sizes"],
+                "optimizer":       cfg["optim"],
+                "num_gpus":        world_size
+            }
+        )
+
+def train(cfg):
+    """Main training function that sets up distributed training if needed."""
+    # Check if we should use distributed training
+    if cfg.get("distributed", False):
+        # Get number of available GPUs
+        world_size = torch.cuda.device_count()
+        if world_size > 1:
+            _logger.info(f"Starting distributed training with {world_size} GPUs")
+            mp.spawn(
+                train_distributed,
+                args=(world_size, cfg),
+                nprocs=world_size,
+                join=True
+            )
+            return
+        else:
+            _logger.info("Distributed training requested but only one GPU available. Falling back to single GPU training.")
+    
+    # Single GPU or CPU training
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     ds_train, ds_val = TokenIdDataset.from_textfile(cfg["textfile"], cfg["seqlen"])
@@ -295,11 +406,11 @@ def train(cfg):
     _logger.info(f"Number of examples in test dataset {len(ds_val.dataset)}")
     _logger.info(f"Number of batches in test dataset {len(ds_val)}")
 
-    model  = NLPModel(cfg).to(dev)
+    model = NLPModel(cfg).to(dev)
 
     # Use label smoothing to improve training stability
-    crit   = torch.nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=0.1)
-    opt    = init_optimizer(model.parameters(),cfg)
+    crit = torch.nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=0.1)
+    opt = init_optimizer(model.parameters(), cfg)
     opt.train()
 
     sched = torch.optim.lr_scheduler.StepLR(
@@ -313,7 +424,6 @@ def train(cfg):
         wandb.init(
             # Set the project where this run will be logged
             project=cfg['arch'] + " Shakespeare training",
-            #name=f"epoch_{epoch}",
             name=f"{cfg['arch']} epochs {cfg['num_epochs']}, optimizer {cfg['optim']}, hidden_sizes {cfg['hidden_sizes']}",
             # Track hyper parameters and run metadata
             config={
@@ -731,6 +841,8 @@ if __name__ == "__main__":
     train_parser.add_argument("textfile", help="Path to text file to train on.")
     train_parser.add_argument("--wandb", type=bool, default=False)
     train_parser.add_argument("--optim", type=str, default="adamw")
+    train_parser.add_argument("--distributed", action="store_true", 
+                             help="Use distributed training with multiple GPUs")
     sample_parser = subparsers.add_parser("sample", help="sample")
     sample_parser.add_argument("--precond", help="preconditioning text", default="\n")
     sample_parser.add_argument("--num-tokens", type=int, default=256)
