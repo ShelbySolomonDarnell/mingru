@@ -30,9 +30,7 @@ from torch.nn import Linear
 from examples.utils import *
 from examples.utils import cfg as _cfg
 
-#import mingru
-#import minlstm
-from mingru import *
+from mingru  import *
 from minlstm import *
 
 warnings.filterwarnings("ignore")
@@ -266,7 +264,7 @@ def init_optimizer(params, the_cfg):
             weight_decay=5e-4
         )
     else:
-        result = schedulefree.AdamWScheduleFree(params, lr=cfg["lr"]) 
+        result = schedulefree.AdamWScheduleFree(params, lr=the_cfg["lr"]) 
         """
         result = torch.optim.AdamW(  # Use AdamW instead of Adam for better stability
             params,
@@ -286,6 +284,33 @@ def setup_ddp(rank, world_size):
 def cleanup_ddp():
     """Clean up the distributed environment."""
     dist.destroy_process_group()
+
+def init_wandb(cfg, rank):
+    if cfg["wandb"]:
+        wandb.init(
+            # Set the project where this run will be logged
+            project=cfg['arch'] + " Shakespeare training",
+            name=f"{cfg['arch']} GPU {rank} epochs {cfg['num_epochs']}, optimizer {cfg['optim']}, hidden_sizes {cfg['hidden_sizes']}",
+            # Track hyper parameters and run metadata
+            config={
+                "architecture":    cfg["arch"],
+                "learning_rate":   cfg["lr"],
+                "batch_size":      cfg["batch_size"],
+                "dropout":         cfg["dropout"],
+                "dataset":         cfg["dataset"],
+                "epochs":          cfg["num_epochs"],
+                "sequence_length": cfg["seqlen"],
+                "vocabulary_size": cfg["vocab_size"],
+                "embedding_size":  cfg["emb_size"],
+                "normalize":       cfg["norm"],
+                "hidden_sizes":    cfg["hidden_sizes"],
+                "optimizer":       cfg["optim"]
+            }
+        )
+
+def close_wandb(is_logging):
+    if is_logging:
+        wandb.finish()
 
 def train_distributed(rank, world_size, cfg):
     """Train the model in a distributed setting."""
@@ -367,33 +392,37 @@ def train_distributed(rank, world_size, cfg):
             }
         )
 
-def train(cfg):
+def train(rank, world_size, cfg):
     """Main training function that sets up distributed training if needed."""
-    # Check if we should use distributed training
-    if cfg.get("distributed", False):
-        # Get number of available GPUs
-        world_size = torch.cuda.device_count()
-        if world_size > 1:
-            _logger.info(f"Starting distributed training with {world_size} GPUs")
-            mp.spawn(
-                train_distributed,
-                args=(world_size, cfg),
-                nprocs=world_size,
-                join=True
-            )
-            return
-        else:
-            _logger.info("Distributed training requested but only one GPU available. Falling back to single GPU training.")
-    
     # Single GPU or CPU training
-    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    print(f"Running DDP on rank {rank}")
+    setup_ddp(rank, world_size)
+    dev = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
+
 
     ds_train, ds_val = TokenIdDataset.from_textfile(cfg["textfile"], cfg["seqlen"])
+    train_sampler = DistributedSampler(
+        ds_train, 
+        num_replicas=world_size, 
+        rank=rank,
+        shuffle=True
+    )
+    """
     dl_train = torch.utils.data.DataLoader(
         ds_train,
         batch_size=cfg["batch_size"],
         shuffle=True,
         num_workers=0,
+        sampler=train_sampler,
+    )
+    """
+    dl_train = torch.utils.data.DataLoader(
+        ds_train,
+        batch_size=cfg["batch_size"],
+        sampler=train_sampler,
+        num_workers=2,
+        pin_memory=True
     )
 
     _logger.info(f"Number of examples in dataset {len(dl_train.dataset)}")
@@ -407,11 +436,13 @@ def train(cfg):
     _logger.info(f"Number of batches in test dataset {len(ds_val)}")
 
     model = NLPModel(cfg).to(dev)
+    ddp_model = DDP(model, device_ids=[rank] if torch.cuda.is_available() else None)
 
     # Use label smoothing to improve training stability
     crit = torch.nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=0.1)
-    opt = init_optimizer(model.parameters(), cfg)
-    opt.train()
+    opt = init_optimizer(ddp_model.parameters(), cfg)
+    if (cfg["optim"] == "adamw"):
+        opt.train()
 
     sched = torch.optim.lr_scheduler.StepLR(
         opt,
@@ -419,37 +450,19 @@ def train(cfg):
         gamma=0.1,
     )
 
-    best_acc = 0  # Start with 0 since we're tracking accuracy (0-1)
-    if cfg["wandb"]:
-        wandb.init(
-            # Set the project where this run will be logged
-            project=cfg['arch'] + " Shakespeare training",
-            name=f"{cfg['arch']} epochs {cfg['num_epochs']}, optimizer {cfg['optim']}, hidden_sizes {cfg['hidden_sizes']}",
-            # Track hyper parameters and run metadata
-            config={
-                "architecture":    cfg["arch"],
-                "learning_rate":   cfg["lr"],
-                "batch_size":      cfg["batch_size"],
-                "dropout":         cfg["dropout"],
-                "dataset":         cfg["dataset"],
-                "epochs":          cfg["num_epochs"],
-                "sequence_length": cfg["seqlen"],
-                "vocabulary_size": cfg["vocab_size"],
-                "embedding_size":  cfg["emb_size"],
-                "normalize":       cfg["norm"],
-                "hidden_sizes":    cfg["hidden_sizes"],
-                "optimizer":       cfg["optim"]
-            }
-        )
-    # Initialize hidden state variables based on architecture
+    # Initialize online logging and analysis
+    init_wandb(cfg, rank)
     is_lstm = cfg["arch"] == "minLSTM"
+    # Initialize hidden state variables based on architecture
     if is_lstm:
         detached_h_state = []
         detached_c_state = []
     else:  # minGRU
         detached_hidden_state = []
         
+    best_acc = 0  # Start with 0 since we're tracking accuracy (0-1)
     for epoch in range(cfg["num_epochs"]):
+        train_sampler.set_epoch(epoch)
         for step, (x, y) in enumerate(dl_train):
             x = x.to(dev)
             y = y.to(dev)
@@ -466,22 +479,22 @@ def train(cfg):
             if is_lstm:
                 if detached_h_state and detached_c_state:
                     # Use the separate states method for MinLSTM
-                    x_emb = model.emb(x)
+                    x_emb = ddp_model.emb(x)
                     try:
                         # Try using forward_with_separate_states if available
-                        rnn_out, h_out, c_out = model.rnn.forward_with_separate_states(x_emb, detached_h_state, detached_c_state)
-                        y_hat = model.fc(model.ln(rnn_out))
+                        rnn_out, h_out, c_out = ddp_model.rnn.forward_with_separate_states(x_emb, detached_h_state, detached_c_state)
+                        y_hat = ddp_model.fc(model.ln(rnn_out))
                     except AttributeError:
                         # Fall back to regular forward if the method is not available
-                        rnn_out, (h_out, c_out) = model.rnn(x_emb, (detached_h_state, detached_c_state))
-                        y_hat = model.fc(model.ln(rnn_out))
+                        rnn_out, (h_out, c_out) = ddp_model.rnn(x_emb, (detached_h_state, detached_c_state))
+                        y_hat = ddp_model.fc(model.ln(rnn_out))
                     
                     # Detach states for next iteration
                     detached_h_state = detach_tensors_in_list(h_out)
                     detached_c_state = detach_tensors_in_list(c_out)
                 else:
                     # First iteration, let the model initialize states
-                    y_hat, hidden_state = model.forward(x)
+                    y_hat, hidden_state = ddp_model.forward(x)
                     # Unpack and detach
                     h_state, c_state = hidden_state
                     detached_h_state = detach_tensors_in_list(h_state)
@@ -489,12 +502,12 @@ def train(cfg):
             else:  # minGRU
                 if detached_hidden_state:
                     # Use the separate states method for consistency
-                    x_emb = model.emb(x)
-                    rnn_out, h_out, _ = model.rnn.forward_with_separate_states(x_emb, detached_hidden_state)
-                    y_hat = model.fc(model.ln(rnn_out))
+                    x_emb = ddp_model.emb(x)
+                    rnn_out, h_out, _ = ddp_model.rnn.forward_with_separate_states(x_emb, detached_hidden_state)
+                    y_hat = ddp_model.fc(ddp_model.ln(rnn_out))
                     detached_hidden_state = detach_tensors_in_list(h_out)
                 else:
-                    y_hat, hidden_state = model.forward(x)
+                    y_hat, hidden_state = ddp_model.forward(x)
                     
                     # Ensure hidden_state is a list before detaching
                     if not isinstance(hidden_state, list) and hidden_state is not None:
@@ -510,15 +523,13 @@ def train(cfg):
                 _logger.warning(f"NaN detected in loss at step {step+1}. Skipping backward pass.")
                 continue
                 
-            #opt.zero_grad()
             opt.zero_grad()
             loss.backward()
+            opt.step()
             
             # Apply gradient clipping to prevent exploding gradients
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(ddp_model.parameters(), max_norm=1.0)
             
-            #opt.step()
-            opt.step()
             
             # Calculate perplexity with safety check
             perplexed = torch.exp(torch.clamp(loss, 0, 20))  # Clamp to prevent overflow
@@ -528,7 +539,7 @@ def train(cfg):
                 _logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, training perplexity: {perplexed:.4f}")
                 wandb.log({"step":step+1, "loss":loss, "training_perplexity":perplexed}) if cfg["wandb"] else None
             if (step + 1) % 200 == 0:
-                val_acc, val_loss = validate(model, dev, ds_val)
+                val_acc, val_loss = validate(ddp_model, dev, ds_val)
                 _logger.info(
                     f"Epoch {epoch+1}, Step {step+1}, Validation Accuracy: {val_acc*100:.2f}%, Validation Loss: {val_loss:.2f}"
                 )
@@ -550,17 +561,19 @@ def train(cfg):
                         }
                     )
                     best_acc = val_acc
-                demo, sample_perplexity = generate_text_mbili(model, dev, prefix="\n", num_tokens=32, top_k=200)
+                demo, sample_perplexity = generate_text(ddp_model, dev, prefix="\n", num_tokens=32, top_k=200)
                 wandb.log(
                     {"Epoch":epoch+1,"Step":step+1,"Validation Accuracy":val_acc*100, "Validation Loss": val_loss, "Sample perplexity": sample_perplexity}
                 ) if cfg["wandb"] else None
                 _logger.info(f"Sample perplexity: {sample_perplexity}\nSample model output: {demo}")
-                model.train()
-                opt.train()
+                ddp_model.train()
+                if (cfg["optim"] == "adamw"):
+                    opt.train()
 
         sched.step()
         detached_hidden_state = []
-    wandb.finish() if cfg["wandb"] else None
+    close_wandb(cfg["wandb"])
+    cleanup_ddp()
 
 
 @torch.no_grad()
@@ -607,39 +620,6 @@ def generate_text(
     num_tokens: int,
     temperature: float = 1.0,
     top_k: int = None,
-) -> str:
-    #perplexed = Perplexity()
-    enc = tiktoken.get_encoding("gpt2")
-    ids = (
-        torch.tensor(
-            enc.encode_ordinary(prefix),
-            dtype=int,
-        )
-        .to(dev)
-        .unsqueeze(0)
-    )
-    gen = generate_tokens(
-        model,
-        prefix_ids=ids,
-        temperature=temperature,
-        top_k=top_k,
-    )
-    #new = torch_cat_with_check(list(islice(gen, num_tokens)), dim=1)
-    new = torch.cat(list(islice(gen, num_tokens)), dim=1)
-    #perplexed.update(ids.squeeze(0), new)
-    #perplexed.compute()
-    #_logger.info(f"Perplexity: {perplexed}")
-    #wandb.log({"perplexity":perplexed})
-    return enc.decode(new[0].cpu().tolist())
-
-@torch.no_grad()
-def generate_text_mbili(
-    model: NLPModel,
-    dev: torch.device,
-    prefix: str,
-    num_tokens: int,
-    temperature: float = 1.0,
-    top_k: int = None,
 ) -> tuple[str, torch.Tensor]:
     enc = tiktoken.get_encoding("gpt2")
     ids = (
@@ -654,7 +634,7 @@ def generate_text_mbili(
     all_probs = []
     generated_tokens = []
 
-    gen = generate_tokens_mbili(model, prefix_ids=ids, temperature=temperature, top_k=top_k)
+    gen = generate_tokens(model, prefix_ids=ids, temperature=temperature, top_k=top_k)
     generated_tokens, all_probs = zip(*list(islice(gen, num_tokens))) # splits a list of tuples
     new = torch.cat(generated_tokens, dim=1)
     g_tokens = new.squeeze(0).unsqueeze(1) # reformatted the tokens for calculations
@@ -672,7 +652,7 @@ def generate_text_mbili(
 
 
 @torch.no_grad()
-def generate_tokens_mbili(model, prefix_ids, temperature=1.0, top_k=None):
+def generate_tokens(model, prefix_ids, temperature=1.0, top_k=None):
     assert prefix_ids.shape[1] > 0, "Need at least one start token"
     inp = prefix_ids
     
@@ -719,63 +699,9 @@ def generate_tokens_mbili(model, prefix_ids, temperature=1.0, top_k=None):
             yield idx_next, probs # Yield both token and probabilities
             inp = idx_next
     except Exception as e:
-        _logger.error(f"Error in generate_tokens_mbili: {str(e)}")
+        _logger.error(f"Error in generate_tokens: {str(e)}")
         # Yield a dummy token and probability to avoid breaking the caller
         yield torch.zeros_like(prefix_ids[:, :1]), torch.ones((1, 1, 50257)) / 50257
-
-
-
-
-@torch.no_grad()
-def generate_tokens(model, prefix_ids, temperature=1.0, top_k=None):
-    assert prefix_ids.shape[1] > 0, "Need at least one start token"
-    inp = prefix_ids
-    
-    # Initialize hidden states based on model architecture
-    # Use a direct attribute check instead of isinstance for TorchScript compatibility
-    is_lstm = hasattr(model, '_is_lstm_model') and model._is_lstm_model
-    
-    h = None
-    c = None if not is_lstm else None
-
-    try:
-        while True:
-            if is_lstm:
-                # For MinLSTM, use the separate states method
-                if h is not None and c is not None:
-                    try:
-                        # Try using forward_with_separate_states if available
-                        logits, h, c = model.rnn.forward_with_separate_states(model.emb(inp), h, c)
-                        logits = model.fc(model.ln(logits))
-                    except AttributeError:
-                        # Fall back to regular forward if the method is not available
-                        rnn_out, (h, c) = model.rnn(model.emb(inp), (h, c))
-                        logits = model.fc(model.ln(rnn_out))
-                else:
-                    # First call, initialize states
-                    logits, hidden_state = model.forward(inp)
-                    h, c = hidden_state
-            else:
-                # For MinGRU, use the separate states method for consistency
-                if h is not None:
-                    logits, h, _ = model.rnn.forward_with_separate_states(model.emb(inp), h)
-                    logits = model.fc(model.ln(logits))
-                else:
-                    # First call, initialize states
-                    logits, h = model.forward(inp)
-                
-            logits = logits[:, -1, :] / temperature
-            if top_k is not None:
-                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits[logits < v[:, [-1]]] = -float("Inf")
-            probs = F.softmax(logits, dim=-1)
-            idx_next = torch.multinomial(probs, num_samples=1)
-            yield idx_next
-            inp = idx_next
-    except Exception as e:
-        _logger.error(f"Error in generate_tokens: {str(e)}")
-        yield torch.zeros_like(prefix_ids[:, :1])
-
 
 @torch.no_grad()
 def sample(cfg):
@@ -799,7 +725,7 @@ def sample(cfg):
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(dev)
     
-    output, perplex = generate_text_mbili(model, dev, cfg["precond"], cfg["num_tokens"], top_k=200)
+    output, perplex = generate_text(model, dev, cfg["precond"], cfg["num_tokens"], top_k=200)
     _logger.info(f"Sample perplexity is {perplex}")
     print("[Sampling perplexity] {0}\n{1}\n".format(perplex, output))
     
@@ -852,9 +778,10 @@ if __name__ == "__main__":
 
     if args.cmd == "train":
         cfg.update(vars(args))
-        _logger.info(f"New training session with {cfg}")
-        train(cfg)
-        # train(cfg)
+        world_size = 4 if torch.cuda.device_count() > 4 else torch.cuda.device_count()
+        _logger.info(f"New training session with {cfg}, and {world_size} GPUs")
+        mp.spawn(train, args=(world_size,cfg), nprocs=world_size, join=True)
+        #train(cfg)
     elif args.cmd == "sample":
         cfg.update(vars(args))
         _logger.info(f"New sampling session with {cfg}")
