@@ -10,10 +10,17 @@ import warnings
 from itertools import islice
 from pathlib import Path
 import os
+import datetime
 
 import sys
 import json
-import wandb
+# Try to import wandb, but don't fail if it's not available
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+    print("Warning: wandb not installed. Logging features will be disabled.")
 import numpy as np
 import tiktoken
 import torch
@@ -279,38 +286,68 @@ def setup_ddp(rank, world_size):
     """Initialize the distributed environment."""
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    # Add timeout to prevent indefinite hanging
+    dist.init_process_group("nccl", rank=rank, world_size=world_size, timeout=datetime.timedelta(minutes=30))
+    # Set device for this process
+    torch.cuda.set_device(rank)
 
 def cleanup_ddp():
     """Clean up the distributed environment."""
+    # Make sure all processes have completed before destroying the process group
+    torch.cuda.synchronize()
     dist.destroy_process_group()
 
 def init_wandb(cfg, rank):
-    if cfg["wandb"]:
-        wandb.init(
-            # Set the project where this run will be logged
-            project=cfg['arch'] + " Shakespeare training",
-            name=f"{cfg['arch']} GPU {rank} epochs {cfg['num_epochs']}, optimizer {cfg['optim']}, hidden_sizes {cfg['hidden_sizes']}",
-            # Track hyper parameters and run metadata
-            config={
-                "architecture":    cfg["arch"],
-                "learning_rate":   cfg["lr"],
-                "batch_size":      cfg["batch_size"],
-                "dropout":         cfg["dropout"],
-                "dataset":         cfg["dataset"],
-                "epochs":          cfg["num_epochs"],
-                "sequence_length": cfg["seqlen"],
-                "vocabulary_size": cfg["vocab_size"],
-                "embedding_size":  cfg["emb_size"],
-                "normalize":       cfg["norm"],
-                "hidden_sizes":    cfg["hidden_sizes"],
-                "optimizer":       cfg["optim"]
-            }
-        )
+    """Initialize wandb logging.
+    
+    This should only be called from rank 0 in a distributed setting.
+    
+    Args:
+        cfg: Training configuration
+        rank: Process rank
+    """
+    if cfg["wandb"] and WANDB_AVAILABLE:
+        try:
+            # Only log from rank 0 in distributed training
+            if rank == 0:
+                wandb.init(
+                    # Set the project where this run will be logged
+                    project=cfg['arch'] + " Shakespeare training",
+                    name=f"{cfg['arch']} epochs {cfg['num_epochs']}, optimizer {cfg['optim']}, hidden_sizes {cfg['hidden_sizes']}",
+                    # Track hyper parameters and run metadata
+                    config={
+                        "architecture":    cfg["arch"],
+                        "learning_rate":   cfg["lr"],
+                        "batch_size":      cfg["batch_size"],
+                        "dropout":         cfg["dropout"],
+                        "dataset":         cfg["dataset"],
+                        "epochs":          cfg["num_epochs"],
+                        "sequence_length": cfg["seqlen"],
+                        "vocabulary_size": cfg["vocab_size"],
+                        "embedding_size":  cfg["emb_size"],
+                        "normalize":       cfg["norm"],
+                        "hidden_sizes":    cfg["hidden_sizes"],
+                        "optimizer":       cfg["optim"],
+                        "num_gpus":        torch.cuda.device_count()
+                    }
+                )
+                _logger.info("Wandb logging initialized")
+        except Exception as e:
+            _logger.warning(f"Failed to initialize wandb: {str(e)}")
+    elif cfg["wandb"] and not WANDB_AVAILABLE:
+        _logger.warning("Wandb logging requested but wandb is not available. Install with: pip install wandb")
 
 def close_wandb(is_logging):
-    if is_logging:
-        wandb.finish()
+    """Safely close wandb logging.
+    
+    Args:
+        is_logging: Whether wandb logging is active
+    """
+    if is_logging and WANDB_AVAILABLE:
+        try:
+            wandb.finish()
+        except Exception as e:
+            _logger.warning(f"Error closing wandb: {str(e)}")
 
 def train_distributed(rank, world_size, cfg):
     """Train the model in a distributed setting."""
@@ -394,186 +431,222 @@ def train_distributed(rank, world_size, cfg):
 
 def train(rank, world_size, cfg):
     """Main training function that sets up distributed training if needed."""
-    # Single GPU or CPU training
+    try:
+        print(f"Running DDP on rank {rank}")
+        setup_ddp(rank, world_size)
+        dev = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
 
-    print(f"Running DDP on rank {rank}")
-    setup_ddp(rank, world_size)
-    dev = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
-
-
-    ds_train, ds_val = TokenIdDataset.from_textfile(cfg["textfile"], cfg["seqlen"])
-    train_sampler = DistributedSampler(
-        ds_train, 
-        num_replicas=world_size, 
-        rank=rank,
-        shuffle=True
-    )
-    """
-    dl_train = torch.utils.data.DataLoader(
-        ds_train,
-        batch_size=cfg["batch_size"],
-        shuffle=True,
-        num_workers=0,
-        sampler=train_sampler,
-    )
-    """
-    dl_train = torch.utils.data.DataLoader(
-        ds_train,
-        batch_size=cfg["batch_size"],
-        sampler=train_sampler,
-        num_workers=2,
-        pin_memory=True
-    )
-
-    _logger.info(f"Number of examples in dataset {len(dl_train.dataset)}")
-    _logger.info(f"Number of batches in dataset {len(dl_train)}")
-
-    ds_val = torch.utils.data.Subset(
-        ds_val, np.random.choice(len(ds_val), 256, replace=False)
-    )
-
-    _logger.info(f"Number of examples in test dataset {len(ds_val.dataset)}")
-    _logger.info(f"Number of batches in test dataset {len(ds_val)}")
-
-    model = NLPModel(cfg).to(dev)
-    ddp_model = DDP(model, device_ids=[rank] if torch.cuda.is_available() else None)
-
-    # Use label smoothing to improve training stability
-    crit = torch.nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=0.1)
-    opt = init_optimizer(ddp_model.parameters(), cfg)
-    if (cfg["optim"] == "adamw"):
-        opt.train()
-
-    sched = torch.optim.lr_scheduler.StepLR(
-        opt,
-        cfg["num_epochs"] - 2,
-        gamma=0.1,
-    )
-
-    # Initialize online logging and analysis
-    init_wandb(cfg, rank)
-    is_lstm = cfg["arch"] == "minLSTM"
-    # Initialize hidden state variables based on architecture
-    if is_lstm:
-        detached_h_state = []
-        detached_c_state = []
-    else:  # minGRU
-        detached_hidden_state = []
+        # Only log from rank 0 to avoid duplicate logs
+        should_log = rank == 0
         
-    best_acc = 0  # Start with 0 since we're tracking accuracy (0-1)
-    for epoch in range(cfg["num_epochs"]):
-        train_sampler.set_epoch(epoch)
-        for step, (x, y) in enumerate(dl_train):
-            x = x.to(dev)
-            y = y.to(dev)
+        # Load datasets
+        ds_train, ds_val = TokenIdDataset.from_textfile(cfg["textfile"], cfg["seqlen"])
+        train_sampler = DistributedSampler(
+            ds_train, 
+            num_replicas=world_size, 
+            rank=rank,
+            shuffle=True
+        )
+        
+        dl_train = torch.utils.data.DataLoader(
+            ds_train,
+            batch_size=cfg["batch_size"],
+            sampler=train_sampler,
+            num_workers=2,
+            pin_memory=True,
+            persistent_workers=True
+        )
 
-            if (step % (len(dl_train)-1)) == 0:
-                # Reset hidden states at the beginning of each epoch
-                if is_lstm:
-                    detached_h_state = []
-                    detached_c_state = []
-                else:  # minGRU
-                    detached_hidden_state = None
-                    
-            # Forward pass with appropriate hidden state handling
+        if should_log:
+            _logger.info(f"Number of examples in dataset {len(dl_train.dataset)}")
+            _logger.info(f"Number of batches in dataset {len(dl_train)}")
+
+        # Create validation dataset - only on rank 0
+        if should_log:
+            ds_val = torch.utils.data.Subset(
+                ds_val, np.random.choice(len(ds_val), 256, replace=False)
+            )
+            _logger.info(f"Number of examples in test dataset {len(ds_val)}")
+
+        # Create model and move to device
+        model = NLPModel(cfg).to(dev)
+        ddp_model = DDP(model, device_ids=[rank], find_unused_parameters=False)
+
+        # Use label smoothing to improve training stability
+        crit = torch.nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=0.1)
+        opt = init_optimizer(ddp_model.parameters(), cfg)
+        if (cfg["optim"] == "adamw"):
+            opt.train()
+
+        sched = torch.optim.lr_scheduler.StepLR(
+            opt,
+            cfg["num_epochs"] - 2,
+            gamma=0.1,
+        )
+
+        # Initialize online logging and analysis - only on rank 0
+        if should_log:
+            init_wandb(cfg, rank)
+            
+        is_lstm = cfg["arch"] == "minLSTM"
+        # Initialize hidden state variables based on architecture
+        if is_lstm:
+            detached_h_state = []
+            detached_c_state = []
+        else:  # minGRU
+            detached_hidden_state = None
+            
+        best_acc = 0  # Start with 0 since we're tracking accuracy (0-1)
+        for epoch in range(cfg["num_epochs"]):
+            # Set epoch for sampler to ensure different shuffling each epoch
+            train_sampler.set_epoch(epoch)
+            
+            # Reset hidden states at the beginning of each epoch
             if is_lstm:
-                if detached_h_state and detached_c_state:
-                    # Use the separate states method for MinLSTM
-                    x_emb = ddp_model.emb(x)
-                    try:
-                        # Try using forward_with_separate_states if available
-                        rnn_out, h_out, c_out = ddp_model.rnn.forward_with_separate_states(x_emb, detached_h_state, detached_c_state)
-                        y_hat = ddp_model.fc(model.ln(rnn_out))
-                    except AttributeError:
-                        # Fall back to regular forward if the method is not available
-                        rnn_out, (h_out, c_out) = ddp_model.rnn(x_emb, (detached_h_state, detached_c_state))
-                        y_hat = ddp_model.fc(model.ln(rnn_out))
-                    
-                    # Detach states for next iteration
-                    detached_h_state = detach_tensors_in_list(h_out)
-                    detached_c_state = detach_tensors_in_list(c_out)
-                else:
-                    # First iteration, let the model initialize states
-                    y_hat, hidden_state = ddp_model.forward(x)
-                    # Unpack and detach
-                    h_state, c_state = hidden_state
-                    detached_h_state = detach_tensors_in_list(h_state)
-                    detached_c_state = detach_tensors_in_list(c_state)
+                detached_h_state = []
+                detached_c_state = []
             else:  # minGRU
-                if detached_hidden_state:
-                    # Use the separate states method for consistency
-                    x_emb = ddp_model.emb(x)
-                    rnn_out, h_out, _ = ddp_model.rnn.forward_with_separate_states(x_emb, detached_hidden_state)
-                    y_hat = ddp_model.fc(ddp_model.ln(rnn_out))
-                    detached_hidden_state = detach_tensors_in_list(h_out)
-                else:
-                    y_hat, hidden_state = ddp_model.forward(x)
-                    
-                    # Ensure hidden_state is a list before detaching
-                    if not isinstance(hidden_state, list) and hidden_state is not None:
-                        hidden_state = [hidden_state] if torch.is_tensor(hidden_state) else list(hidden_state)
-                    
-                    detached_hidden_state = detach_tensors_in_list(hidden_state)
-
-            # Apply gradient clipping to prevent exploding gradients
-            loss = crit(y_hat.permute(0, 2, 1), y)
-            
-            # Check for NaN values in loss
-            if torch.isnan(loss).any():
-                _logger.warning(f"NaN detected in loss at step {step+1}. Skipping backward pass.")
-                continue
+                detached_hidden_state = None
                 
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
-            
-            # Apply gradient clipping to prevent exploding gradients
-            torch.nn.utils.clip_grad_norm_(ddp_model.parameters(), max_norm=1.0)
-            
-            
-            # Calculate perplexity with safety check
-            perplexed = torch.exp(torch.clamp(loss, 0, 20))  # Clamp to prevent overflow
-
-            #_logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, perplexity: {perplexed:.4f}")
-            if (step + 1) % 20 == 0:
-                _logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, training perplexity: {perplexed:.4f}")
-                wandb.log({"step":step+1, "loss":loss, "training_perplexity":perplexed}) if cfg["wandb"] else None
-            if (step + 1) % 200 == 0:
-                val_acc, val_loss = validate(ddp_model, dev, ds_val)
-                _logger.info(
-                    f"Epoch {epoch+1}, Step {step+1}, Validation Accuracy: {val_acc*100:.2f}%, Validation Loss: {val_loss:.2f}"
-                )
-                if val_acc > best_acc:
-                    _logger.info(f"New best model at epoch {epoch} step {step+1}")
-                    model_name = f"nlp_best.epochs{cfg['num_epochs']}_{cfg['arch']}_hidden{'_'.join(map(str, cfg['hidden_sizes']))}.pt"
-                    model_path = f"tmp/{model_name}"
+            for step, (x, y) in enumerate(dl_train):
+                x = x.to(dev, non_blocking=True)
+                y = y.to(dev, non_blocking=True)
                     
-                    # Save model using our custom method
-                    model.save_model(
-                        model_path,
-                        optimizer=opt,
-                        epoch=epoch,
-                        metadata={
-                            'validation_accuracy': val_acc,
-                            'validation_loss': val_loss,
-                            'step': step,
-                            'optimizer': cfg['optim']
-                        }
-                    )
-                    best_acc = val_acc
-                demo, sample_perplexity = generate_text(ddp_model, dev, prefix="\n", num_tokens=32, top_k=200)
-                wandb.log(
-                    {"Epoch":epoch+1,"Step":step+1,"Validation Accuracy":val_acc*100, "Validation Loss": val_loss, "Sample perplexity": sample_perplexity}
-                ) if cfg["wandb"] else None
-                _logger.info(f"Sample perplexity: {sample_perplexity}\nSample model output: {demo}")
-                ddp_model.train()
-                if (cfg["optim"] == "adamw"):
-                    opt.train()
+                # Forward pass with appropriate hidden state handling
+                if is_lstm:
+                    if detached_h_state and detached_c_state:
+                        # Use the separate states method for MinLSTM
+                        x_emb = ddp_model.module.emb(x)
+                        try:
+                            # Try using forward_with_separate_states if available
+                            rnn_out, h_out, c_out = ddp_model.module.rnn.forward_with_separate_states(x_emb, detached_h_state, detached_c_state)
+                            y_hat = ddp_model.module.fc(ddp_model.module.ln(rnn_out))
+                        except AttributeError:
+                            # Fall back to regular forward if the method is not available
+                            rnn_out, (h_out, c_out) = ddp_model.module.rnn(x_emb, (detached_h_state, detached_c_state))
+                            y_hat = ddp_model.module.fc(ddp_model.module.ln(rnn_out))
+                        
+                        # Detach states for next iteration
+                        detached_h_state = detach_tensors_in_list(h_out)
+                        detached_c_state = detach_tensors_in_list(c_out)
+                    else:
+                        # First iteration, let the model initialize states
+                        y_hat, hidden_state = ddp_model(x)
+                        # Unpack and detach
+                        h_state, c_state = hidden_state
+                        detached_h_state = detach_tensors_in_list(h_state)
+                        detached_c_state = detach_tensors_in_list(c_state)
+                else:  # minGRU
+                    if detached_hidden_state is not None:
+                        # Use the separate states method for consistency
+                        x_emb = ddp_model.module.emb(x)
+                        rnn_out, h_out, _ = ddp_model.module.rnn.forward_with_separate_states(x_emb, detached_hidden_state)
+                        y_hat = ddp_model.module.fc(ddp_model.module.ln(rnn_out))
+                        detached_hidden_state = detach_tensors_in_list(h_out)
+                    else:
+                        y_hat, hidden_state = ddp_model(x)
+                        
+                        # Ensure hidden_state is a list before detaching
+                        if not isinstance(hidden_state, list) and hidden_state is not None:
+                            hidden_state = [hidden_state] if torch.is_tensor(hidden_state) else list(hidden_state)
+                        
+                        detached_hidden_state = detach_tensors_in_list(hidden_state)
 
-        sched.step()
-        detached_hidden_state = []
-    close_wandb(cfg["wandb"])
-    cleanup_ddp()
+                # Calculate loss and backpropagate
+                loss = crit(y_hat.permute(0, 2, 1), y)
+                
+                # Check for NaN values in loss
+                if torch.isnan(loss).any():
+                    if should_log:
+                        _logger.warning(f"NaN detected in loss at step {step+1}. Skipping backward pass.")
+                    continue
+                    
+                opt.zero_grad()
+                loss.backward()
+                
+                # Apply gradient clipping to prevent exploding gradients
+                torch.nn.utils.clip_grad_norm_(ddp_model.parameters(), max_norm=1.0)
+                
+                opt.step()
+                
+                # Calculate perplexity with safety check
+                perplexed = torch.exp(torch.clamp(loss, 0, 20))  # Clamp to prevent overflow
+
+                # Logging - only from rank 0
+                if should_log and (step + 1) % 20 == 0:
+                    _logger.info(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss:.4f}, training perplexity: {perplexed:.4f}")
+                    if cfg["wandb"]:
+                        wandb.log({"step": step+1, "loss": loss, "training_perplexity": perplexed})
+                
+                # Validation - only from rank 0
+                if should_log and (step + 1) % 200 == 0:
+                    val_acc, val_loss = validate(model, dev, ds_val)  # Use non-DDP model for validation
+                    _logger.info(
+                        f"Epoch {epoch+1}, Step {step+1}, Validation Accuracy: {val_acc*100:.2f}%, Validation Loss: {val_loss:.2f}"
+                    )
+                    if val_acc > best_acc:
+                        _logger.info(f"New best model at epoch {epoch} step {step+1}")
+                        model_name = f"nlp_best.epochs{cfg['num_epochs']}_{cfg['arch']}_hidden{'_'.join(map(str, cfg['hidden_sizes']))}.pt"
+                        model_path = f"tmp/{model_name}"
+                        
+                        # Save model using our custom method
+                        model.save_model(
+                            model_path,
+                            optimizer=opt,
+                            epoch=epoch,
+                            metadata={
+                                'validation_accuracy': val_acc,
+                                'validation_loss': val_loss,
+                                'step': step,
+                                'optimizer': cfg['optim']
+                            }
+                        )
+                        best_acc = val_acc
+                    
+                    # Generate sample text
+                    demo, sample_perplexity = generate_text(model, dev, prefix="\n", num_tokens=32, top_k=200)
+                    if cfg["wandb"]:
+                        wandb.log({
+                            "Epoch": epoch+1,
+                            "Step": step+1,
+                            "Validation Accuracy": val_acc*100, 
+                            "Validation Loss": val_loss, 
+                            "Sample perplexity": sample_perplexity
+                        })
+                    _logger.info(f"Sample perplexity: {sample_perplexity}\nSample model output: {demo}")
+                    
+                    # Make sure to set model back to training mode
+                    model.train()
+                    ddp_model.train()
+                    if (cfg["optim"] == "adamw"):
+                        opt.train()
+
+            # Step the scheduler at the end of each epoch
+            sched.step()
+            
+            # Make sure all processes are synchronized at the end of each epoch
+            dist.barrier()
+            
+        # Clean up at the end of training
+        if should_log:
+            close_wandb(cfg["wandb"])
+        
+        # Make sure all processes are done before cleanup
+        dist.barrier()
+        cleanup_ddp()
+        
+    except Exception as e:
+        # Log the error and clean up
+        print(f"Error on rank {rank}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
+        # Try to clean up even if there was an error
+        try:
+            if dist.is_initialized():
+                cleanup_ddp()
+        except:
+            pass
 
 
 @torch.no_grad()
@@ -582,6 +655,20 @@ def validate(
     dev: torch.device,
     ds: TokenIdDataset,
 ):
+    """Validate model performance on a validation dataset.
+    
+    This function should be called with the non-DDP model to avoid
+    synchronization issues during validation.
+    
+    Args:
+        model: The model to validate (not wrapped in DDP)
+        dev: Device to run validation on
+        ds: Validation dataset
+        
+    Returns:
+        Tuple of (accuracy, average_loss)
+    """
+    # Set model to evaluation mode
     model.eval()
 
     total = 0
@@ -589,25 +676,35 @@ def validate(
     total_correct = 0
     crit = torch.nn.CrossEntropyLoss()
 
+    # Create dataloader for validation
     dl = torch.utils.data.DataLoader(
         ds,
-        batch_size=cfg["batch_size"],
+        batch_size=min(32, len(ds)),  # Use smaller batch size for validation
         shuffle=False,
-        num_workers=0,
+        num_workers=2,
+        pin_memory=True,
     )
 
-    for ids, labels in dl:
-        ids = ids.to(dev)
-        labels = labels.to(dev)
-        logits, _ = model(ids)
-        loss = crit(logits.permute(0, 2, 1), labels)
+    try:
+        for ids, labels in dl:
+            ids = ids.to(dev, non_blocking=True)
+            labels = labels.to(dev, non_blocking=True)
+            
+            # Forward pass without tracking gradients
+            logits, _ = model(ids)
+            loss = crit(logits.permute(0, 2, 1), labels)
 
-        total_correct += (logits.argmax(2) == labels).sum().item()
-        total += ids.shape[0] * ids.shape[1]
-        total_loss += loss.item()
+            # Calculate accuracy
+            total_correct += (logits.argmax(2) == labels).sum().item()
+            total += ids.shape[0] * ids.shape[1]
+            total_loss += loss.item() * ids.shape[0]  # Weight by batch size
+    except Exception as e:
+        _logger.error(f"Error during validation: {str(e)}")
+        return 0.0, float('inf')  # Return worst-case values on error
 
-    acc = total_correct / total
-    avg_loss = total_loss / len(dl)
+    # Calculate final metrics
+    acc = total_correct / max(total, 1)  # Avoid division by zero
+    avg_loss = total_loss / max(total, 1)
 
     return acc, avg_loss
 
@@ -734,31 +831,32 @@ def sample(cfg):
 
 
 if __name__ == "__main__":
-
     import argparse
 
+    # Set up logging
+    os.makedirs("tmp", exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s: %(message)s",
         handlers=[
-            #logging.RotatingFileHandler("tmp/nlp-boros.log.txt", maxBytes=512000, backupCount=100),
-            #logging.FileHandler("tmp/nlp-boros.log.txt", mode="a"),
+            logging.FileHandler("tmp/nlp-boros.log.txt", mode="a"),
             logging.StreamHandler(),
         ],
     )
 
+    # Load configuration
     cfg = {
-        "dataset":      _cfg.get("MAIN","datasetA"), #"tiny-shakespeare",
-        "arch":         _cfg.get("MAIN", "arch"), #"minGRU" or "minLSTM",
-        "lr":           _cfg.getfloat("MAIN","lr"),
-        "batch_size":   _cfg.getint("MAIN","batch_size"), #cfg["batch_size"],
-        "num_epochs":   _cfg.getint("MAIN","num_epochs"), #cfg["num_epochs"],
-        "dropout":      _cfg.getfloat("MAIN","dropout"), #cfg["dropout"],
-        "norm":         _cfg.getboolean("MAIN", "norm"), #cfg["norm"],
-        "hidden_sizes": json.loads(_cfg.get("MAIN", "hidden_sizes")), #cfg["hidden_sizes"]
-        "emb_size":     _cfg.getint("MAIN", "emb_size"), #cfg["emb_size"],
-        "vocab_size":   _cfg.getint("MAIN", "vocab_size"), #cfg["vocab_size"],
-        "seqlen":       _cfg.getint("MAIN", "seqlen") #cfg["seqlen"],
+        "dataset":      _cfg.get("MAIN","datasetA", fallback="tiny-shakespeare"),
+        "arch":         _cfg.get("MAIN", "arch", fallback="minGRU"),
+        "lr":           _cfg.getfloat("MAIN","lr", fallback=0.001),
+        "batch_size":   _cfg.getint("MAIN","batch_size", fallback=64),
+        "num_epochs":   _cfg.getint("MAIN","num_epochs", fallback=5),
+        "dropout":      _cfg.getfloat("MAIN","dropout", fallback=0.1),
+        "norm":         _cfg.getboolean("MAIN", "norm", fallback=True),
+        "hidden_sizes": json.loads(_cfg.get("MAIN", "hidden_sizes", fallback="[256, 512, 1024]")),
+        "emb_size":     _cfg.getint("MAIN", "emb_size", fallback=768),
+        "vocab_size":   _cfg.getint("MAIN", "vocab_size", fallback=50257),
+        "seqlen":       _cfg.getint("MAIN", "seqlen", fallback=128),
     }
 
     parser = argparse.ArgumentParser()
@@ -769,6 +867,8 @@ if __name__ == "__main__":
     train_parser.add_argument("--optim", type=str, default="adamw")
     train_parser.add_argument("--distributed", action="store_true", 
                              help="Use distributed training with multiple GPUs")
+    train_parser.add_argument("--num-gpus", type=int, default=None,
+                             help="Number of GPUs to use (default: all available)")
     sample_parser = subparsers.add_parser("sample", help="sample")
     sample_parser.add_argument("--precond", help="preconditioning text", default="\n")
     sample_parser.add_argument("--num-tokens", type=int, default=256)
@@ -778,10 +878,32 @@ if __name__ == "__main__":
 
     if args.cmd == "train":
         cfg.update(vars(args))
-        world_size = 4 if torch.cuda.device_count() > 4 else torch.cuda.device_count()
-        _logger.info(f"New training session with {cfg}, and {world_size} GPUs")
-        mp.spawn(train, args=(world_size,cfg), nprocs=world_size, join=True)
-        #train(cfg)
+        
+        # Determine number of GPUs to use
+        available_gpus = torch.cuda.device_count()
+        if available_gpus == 0:
+            _logger.warning("No GPUs available. Running on CPU.")
+            # Run in single process mode on CPU
+            train(0, 1, cfg)
+        else:
+            # Use specified number of GPUs or all available
+            if args.num_gpus is not None:
+                world_size = min(args.num_gpus, available_gpus)
+            else:
+                world_size = min(4, available_gpus)  # Default: use up to 4 GPUs
+                
+            _logger.info(f"New training session with {cfg}, using {world_size} of {available_gpus} available GPUs")
+            
+            # Set multiprocessing start method to spawn for better compatibility
+            mp.set_start_method('spawn', force=True)
+            
+            try:
+                mp.spawn(train, args=(world_size, cfg), nprocs=world_size, join=True)
+            except Exception as e:
+                _logger.error(f"Error in training: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                sys.exit(1)
     elif args.cmd == "sample":
         cfg.update(vars(args))
         _logger.info(f"New sampling session with {cfg}")
