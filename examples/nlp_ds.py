@@ -9,9 +9,14 @@ from logging.handlers import RotatingFileHandler
 import warnings
 from itertools import islice
 from pathlib import Path
+import sh
+import pathlib
+import deepspeed
+import tensorboard
+from deepspeed.accelerator import get_accelerator
+
 import os
 import datetime
-
 import sys
 import json
 # Try to import wandb, but don't fail if it's not available
@@ -24,8 +29,8 @@ import torch.nn.functional as F
 import torch.utils.data.dataloader
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data.distributed import DistributedSampler
+#from torch.nn.parallel import DistributedDataParallel as DDP
+#from torch.utils.data.distributed import DistributedSampler
 from torch.nn import Linear
 from examples.utils import *
 from examples.utils import cfg as _cfg
@@ -340,29 +345,32 @@ def close_wandb(is_logging):
         except Exception as e:
             _logger.warning(f"Error closing wandb: {str(e)}")
 
-def train(rank, world_size, cfg):
+def train(cfg,
+          local_rank: int = -1,):
     """Main training function that sets up distributed training if needed."""
     try:
-        print(f"Running DDP on rank {rank}")
-        setup_ddp(rank, world_size)
-        dev = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
+        dev = (torch.device(get_accelerator().device_name(), local_rank) if (local_rank > -1)
+              and get_accelerator().is_available() else torch.device("cpu"))
+        #dev = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
 
         # Only log from rank 0 to avoid duplicate logs
-        should_log = rank == 0
+        should_log = 0
         
         # Load datasets
         ds_train, ds_val = TokenIdDataset.from_textfile(cfg["textfile"], cfg["seqlen"])
+        '''
         train_sampler = DistributedSampler(
             ds_train, 
             num_replicas=world_size, 
             rank=rank,
             shuffle=True
         )
+        '''
         
         dl_train = torch.utils.data.DataLoader(
             ds_train,
             batch_size=cfg["batch_size"],
-            sampler=train_sampler,
+            #sampler=train_sampler,
             num_workers=2,
             pin_memory=True,
             persistent_workers=True
@@ -381,11 +389,12 @@ def train(rank, world_size, cfg):
 
         # Create model and move to device
         model = NLPModel(cfg).to(dev)
-        ddp_model = DDP(model, device_ids=[rank], find_unused_parameters=False)
+        #ddp_model = DDP(model, device_ids=[rank], find_unused_parameters=False)
 
         # Use label smoothing to improve training stability
         crit = torch.nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=0.1)
-        opt = init_optimizer(ddp_model.parameters(), cfg)
+        #opt = init_optimizer(ddp_model.parameters(), cfg)
+        opt = init_optimizer(model.parameters(), cfg)
         if (cfg["optim"] == "adamw"):
             opt.train()
 
@@ -396,8 +405,8 @@ def train(rank, world_size, cfg):
         )
 
         # Initialize online logging and analysis - only on rank 0
-        if should_log:
-            init_wandb(cfg, rank)
+        #if should_log:
+            #init_wandb(cfg, rank)
             
         is_lstm = cfg["arch"] == "minLSTM"
         # Initialize hidden state variables based on architecture
@@ -410,7 +419,7 @@ def train(rank, world_size, cfg):
         best_acc = 0  # Start with 0 since we're tracking accuracy (0-1)
         for epoch in range(cfg["num_epochs"]):
             # Set epoch for sampler to ensure different shuffling each epoch
-            train_sampler.set_epoch(epoch)
+            #train_sampler.set_epoch(epoch)
             
             # Reset hidden states at the beginning of each epoch
             if is_lstm:
@@ -427,22 +436,28 @@ def train(rank, world_size, cfg):
                 if is_lstm:
                     if detached_h_state and detached_c_state:
                         # Use the separate states method for MinLSTM
-                        x_emb = ddp_model.module.emb(x)
+                        #x_emb = ddp_model.module.emb(x)
+                        x_emb = model.module.emb(x)
                         try:
                             # Try using forward_with_separate_states if available
-                            rnn_out, h_out, c_out = ddp_model.module.rnn.forward_with_separate_states(x_emb, detached_h_state, detached_c_state)
-                            y_hat = ddp_model.module.fc(ddp_model.module.ln(rnn_out))
+                            #rnn_out, h_out, c_out = ddp_model.module.rnn.forward_with_separate_states(x_emb, detached_h_state, detached_c_state)
+                            rnn_out, h_out, c_out = model.module.rnn.forward_with_separate_states(x_emb, detached_h_state, detached_c_state)
+                            #y_hat = ddp_model.module.fc(ddp_model.module.ln(rnn_out))
+                            y_hat = model.module.fc(model.module.ln(rnn_out))
                         except AttributeError:
                             # Fall back to regular forward if the method is not available
-                            rnn_out, (h_out, c_out) = ddp_model.module.rnn(x_emb, (detached_h_state, detached_c_state))
-                            y_hat = ddp_model.module.fc(ddp_model.module.ln(rnn_out))
+                            #rnn_out, (h_out, c_out) = ddp_model.module.rnn(x_emb, (detached_h_state, detached_c_state))
+                            y_hat = model.module.fc(model.module.ln(rnn_out))
+                            rnn_out, (h_out, c_out) = model.module.rnn(x_emb, (detached_h_state, detached_c_state))
+                            y_hat = model.module.fc(model.module.ln(rnn_out))
                         
                         # Detach states for next iteration
                         detached_h_state = detach_tensors_in_list(h_out)
                         detached_c_state = detach_tensors_in_list(c_out)
                     else:
                         # First iteration, let the model initialize states
-                        y_hat, hidden_state = ddp_model(x)
+                        #y_hat, hidden_state = ddp_model(x)
+                        y_hat, hidden_state = model(x)
                         # Unpack and detach
                         h_state, c_state = hidden_state
                         detached_h_state = detach_tensors_in_list(h_state)
@@ -450,12 +465,16 @@ def train(rank, world_size, cfg):
                 else:  # minGRU
                     if detached_hidden_state is not None:
                         # Use the separate states method for consistency
-                        x_emb = ddp_model.module.emb(x)
-                        rnn_out, h_out, _ = ddp_model.module.rnn.forward_with_separate_states(x_emb, detached_hidden_state)
-                        y_hat = ddp_model.module.fc(ddp_model.module.ln(rnn_out))
+                        #x_emb = ddp_model.module.emb(x)
+                        #rnn_out, h_out, _ = ddp_model.module.rnn.forward_with_separate_states(x_emb, detached_hidden_state)
+                        x_emb = model.module.emb(x)
+                        rnn_out, h_out, _ = model.module.rnn.forward_with_separate_states(x_emb, detached_hidden_state)
+                        #y_hat = ddp_model.module.fc(ddp_model.module.ln(rnn_out))
+                        y_hat = model.module.fc(model.module.ln(rnn_out))
                         detached_hidden_state = detach_tensors_in_list(h_out)
                     else:
-                        y_hat, hidden_state = ddp_model(x)
+                        #y_hat, hidden_state = ddp_model(x)
+                        y_hat, hidden_state = model(x)
                         
                         # Ensure hidden_state is a list before detaching
                         if not isinstance(hidden_state, list) and hidden_state is not None:
@@ -476,7 +495,8 @@ def train(rank, world_size, cfg):
                 loss.backward()
                 
                 # Apply gradient clipping to prevent exploding gradients
-                torch.nn.utils.clip_grad_norm_(ddp_model.parameters(), max_norm=1.0)
+                #torch.nn.utils.clip_grad_norm_(ddp_model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 
                 opt.step()
                 
@@ -789,7 +809,10 @@ if __name__ == "__main__":
 
     if args.cmd == "train":
         cfg.update(vars(args))
-        
+        _logger.info(f"New training session with {cfg}")
+        train(cfg)
+
+        """
         # Determine number of GPUs to use
         available_gpus = torch.cuda.device_count()
         if available_gpus == 0:
@@ -815,6 +838,7 @@ if __name__ == "__main__":
                 import traceback
                 traceback.print_exc()
                 sys.exit(1)
+        """ 
     elif args.cmd == "sample":
         cfg.update(vars(args))
         _logger.info(f"New sampling session with {cfg}")

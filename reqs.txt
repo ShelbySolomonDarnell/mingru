@@ -1,0 +1,17 @@
+torch
+numpy
+tqdm
+torchtext
+vllm
+spacy
+sacremoses
+git+https://github.com/cheind/mingru.git
+datasets
+lightning
+torchvision
+wandb
+schedulefree
+deepspeed
+loguru
+tensorboard
+openpyxl
