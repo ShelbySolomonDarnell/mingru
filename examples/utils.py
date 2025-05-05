@@ -7,6 +7,8 @@ import string
 import pytz
 import sys
 import time
+import json
+import sh
 from typing import Any, Dict, Tuple
 from venv import logger
 import torch
@@ -22,8 +24,17 @@ tellem = logging.getLogger(__name__)
 """
 
 cfg = configparser.ConfigParser()
-cfg.read('examples/settings.cfg')
-print('[examples.utils] Shakespeare dataset location {0}'.format(cfg.get('TRAIN', 'the_data')))
+cfg.read('/home/shelbys/code/werernns/mingru/examples/settings.cfg')
+
+def print_configuration():
+    # Print the full configuration from settings.cfg
+    print("\n===== FULL CONFIGURATION =====")
+    for section in cfg.sections():
+        print(f"\n[{section}]")
+        for key, value in cfg.items(section):
+            print(f"{key} = {value}")
+    print("================================================\n")
+    #print('[examples.utils] Shakespeare dataset location {0}'.format(cfg.get('TRAIN', 'the_data')))
 
 @staticmethod
 def splitFileThenWrite(path: str, split_percentage: int):
@@ -215,7 +226,7 @@ def load_model_checkpoint(
 ########### Experiment Management Related Functions ##################
 ######################################################################
 
-
+@staticmethod
 def get_unique_identifier(length: int = 8) -> str:
     """Create a unique identifier by choosing `length`
     random characters from list of ascii characters and numbers
@@ -225,7 +236,7 @@ def get_unique_identifier(length: int = 8) -> str:
                    for ix in np.random.choice(len(alphabet), length))
     return uuid
 
-
+@staticmethod
 def create_experiment_dir(checkpoint_dir: pathlib.Path,
                           all_arguments: Dict[str, Any]) -> pathlib.Path:
     """Create an experiment directory and save all arguments in it.

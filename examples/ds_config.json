@@ -1,0 +1,18 @@
+{
+    "train_micro_batch_size_per_gpu": "default",
+    "optimizer": {
+        "type": "Adam",
+        "params": {
+            "lr": 1e-4
+        }
+    },
+    "dtype": {
+        "enabled": "True"
+    },
+    "zero_optimization": {
+        "stage": 1,
+        "offload_optimizer": {
+            "device": "cpu"
+        }
+    }
+}

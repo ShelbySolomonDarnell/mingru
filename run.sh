@@ -48,12 +48,17 @@ train_model() {
   
   if [ "$log_online" -eq 1 ]; then
     echo 'Logging with wandb!'
-    python -m examples.nlp_ds \
-            train \
-              --distributed \
-              --wandb True \
-              --optim "$the_optim" \
-            $training_data
+    deepspeed --bind_cores_to_rank examples/nlp_ds.py \
+              train \
+              --wandb True\ 
+              --optim "$the_optim" \ 
+              $training_data
+    #python -m examples.nlp_ds \
+            #train \
+              #--distributed \
+              #--wandb True \
+              #--optim "$the_optim" \
+            #$training_data
   else
     python -m examples.nlp_ds \
             train \
