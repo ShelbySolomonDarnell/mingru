@@ -349,6 +349,7 @@ def train(cfg):
 
     local_rank = cfg["local_rank"]
     dtype      = cfg["dtype"]
+
     """Main training function that sets up distributed training if needed."""
     try:
         dev = (torch.device(get_accelerator().device_name(), local_rank) if (local_rank > -1)
@@ -794,6 +795,7 @@ if __name__ == "__main__":
         "training_data":  _cfg.get("DATA", "train"),
         "testing_data":   _cfg.get("DATA", "test"),
         "arch":           _cfg.get("MAIN", "arch", fallback="minGRU"),
+        "optim":          _cfg.get("MAIN","optim", fallback="adamw"),
         "lr":             _cfg.getfloat("MAIN","lr", fallback=0.001),
         "batch_size":     _cfg.getint("MAIN","batch_size", fallback=64),
         "num_epochs":     _cfg.getint("MAIN","num_epochs", fallback=5),
@@ -812,17 +814,16 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     # Add local_rank as a global argument so it can be passed directly to the script
-    parser.add_argument("--local_rank", type=int, default=-1, 
-                       help="Local rank passed from distributed launcher")
     subparsers = parser.add_subparsers(dest="cmd")
     train_parser = subparsers.add_parser("train", help="train")
     train_parser.add_argument("--wandb", type=bool, default=False)
-    train_parser.add_argument("--optim", type=str, default="adamw")
     sample_parser = subparsers.add_parser("sample", help="sample")
     sample_parser.add_argument("--precond", help="preconditioning text", default="\n")
     sample_parser.add_argument("--num-tokens", type=int, default=256)
     sample_parser.add_argument("--wandb", type=bool, default=False)
     sample_parser.add_argument("ckpt")
+    parser.add_argument("--local_rank", type=int, default=-1, 
+                       help="Local rank passed from distributed launcher")
     args = parser.parse_args()
 
     if args.cmd == "train":
