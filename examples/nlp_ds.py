@@ -345,12 +345,10 @@ def close_wandb(is_logging):
         except Exception as e:
             _logger.warning(f"Error closing wandb: {str(e)}")
 
-def train(cfg,
-          local_rank: int = -1,
-          dtype: str = "bf16",
-          # Data checkpoint parameters
-          checkpoint_dir: str = None,
-          load_checkpoint_dir: str = None,):
+def train(cfg):
+
+    local_rank = cfg["local_rank"]
+    dtype      = cfg["dtype"]
     """Main training function that sets up distributed training if needed."""
     try:
         dev = (torch.device(get_accelerator().device_name(), local_rank) if (local_rank > -1)
@@ -358,10 +356,10 @@ def train(cfg,
         #dev = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
 
         # Only log from rank 0 to avoid duplicate logs
-        should_log = 0
+        should_log = True if local_rank==0 else False
         
         # Load datasets
-        ds_train, ds_val = TokenIdDataset.from_textfile(cfg["textfile"], cfg["seqlen"])
+        ds_train, ds_val = TokenIdDataset.from_textfile(cfg["training_data"], cfg["seqlen"])
         dl_train = torch.utils.data.DataLoader(
             ds_train,
             batch_size=cfg["batch_size"],
@@ -372,6 +370,7 @@ def train(cfg,
         )
 
         if should_log:
+            print_configuration()
             _logger.info(f"Number of examples in dataset {len(dl_train.dataset)}")
             _logger.info(f"Number of batches in dataset {len(dl_train)}")
 
@@ -411,8 +410,8 @@ def train(cfg,
             }
         }
         model, _, _, _ = deepspeed.initialize(model=model,
-                                            model_parameters=model.parameters(),
-                                            config=ds_config)
+                                              model_parameters=model.parameters(),
+                                              config=ds_config)
         log_dist("DeepSpeed engine created", ranks=[0])
 
         # Use label smoothing to improve training stability
@@ -588,23 +587,12 @@ def train(cfg,
         if should_log:
             close_wandb(cfg["wandb"])
         
-        # Make sure all processes are done before cleanup
-        dist.barrier()
-        cleanup_ddp()
-        
     except Exception as e:
         rank = 0 # remove when doing distributed
         # Log the error and clean up
         print(f"Error on rank {rank}: {str(e)}")
         import traceback
         traceback.print_exc()
-        
-        # Try to clean up even if there was an error
-        try:
-            if dist.is_initialized():
-                cleanup_ddp()
-        except:
-            pass
 
 
 @torch.no_grad()
@@ -704,8 +692,6 @@ def generate_text(
 
     return enc.decode(new[0].cpu().tolist()), perplexity
 
-
-
 @torch.no_grad()
 def generate_tokens(model, prefix_ids, temperature=1.0, top_k=None):
     assert prefix_ids.shape[1] > 0, "Need at least one start token"
@@ -792,12 +778,12 @@ if __name__ == "__main__":
     import argparse
 
     # Set up logging
-    os.makedirs("tmp", exist_ok=True)
+    os.makedirs("/home/shelbys/code/werernns/mingru/tmp", exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s: %(message)s",
         handlers=[
-            logging.FileHandler("tmp/nlp-boros.log.txt", mode="a"),
+            logging.FileHandler("/home/shelbys/code/werernns/mingru/tmp/nlp-boros.log.txt", mode="a"),
             logging.StreamHandler(),
         ],
     )
@@ -805,6 +791,8 @@ if __name__ == "__main__":
     # Load configuration
     cfg = {
         "dataset":        _cfg.get("MAIN","datasetA", fallback="tiny-shakespeare"),
+        "training_data":  _cfg.get("DATA", "train"),
+        "testing_data":   _cfg.get("DATA", "test"),
         "arch":           _cfg.get("MAIN", "arch", fallback="minGRU"),
         "lr":             _cfg.getfloat("MAIN","lr", fallback=0.001),
         "batch_size":     _cfg.getint("MAIN","batch_size", fallback=64),
@@ -821,24 +809,13 @@ if __name__ == "__main__":
         "load_checkpoint_dir": _cfg.get("DS", "load_checkpoint_dir", fallback="None"),
     }
     
-    # Print the full configuration from settings.cfg
-    print("\n===== FULL CONFIGURATION FROM SETTINGS.CFG =====")
-    for section in _cfg.sections():
-        print(f"\n[{section}]")
-        for key, value in _cfg.items(section):
-            print(f"{key} = {value}")
-    print("================================================\n")
 
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="cmd")
     train_parser = subparsers.add_parser("train", help="train")
-    train_parser.add_argument("textfile", help="Path to text file to train on.")
     train_parser.add_argument("--wandb", type=bool, default=False)
     train_parser.add_argument("--optim", type=str, default="adamw")
-    train_parser.add_argument("--distributed", action="store_true", 
-                             help="Use distributed training with multiple GPUs")
-    train_parser.add_argument("--num-gpus", type=int, default=None,
-                             help="Number of GPUs to use (default: all available)")
+    train_parser.add_argument("--local_rank", type=int, default=-1)
     sample_parser = subparsers.add_parser("sample", help="sample")
     sample_parser.add_argument("--precond", help="preconditioning text", default="\n")
     sample_parser.add_argument("--num-tokens", type=int, default=256)
@@ -849,35 +826,9 @@ if __name__ == "__main__":
     if args.cmd == "train":
         cfg.update(vars(args))
         _logger.info(f"New training session with {cfg}")
+        print(f"New training session with {cfg}")
         train(cfg)
 
-        """
-        # Determine number of GPUs to use
-        available_gpus = torch.cuda.device_count()
-        if available_gpus == 0:
-            _logger.warning("No GPUs available. Running on CPU.")
-            # Run in single process mode on CPU
-            train(0, 1, cfg)
-        else:
-            # Use specified number of GPUs or all available
-            if args.num_gpus is not None:
-                world_size = min(args.num_gpus, available_gpus)
-            else:
-                world_size = min(4, available_gpus)  # Default: use up to 4 GPUs
-                
-            _logger.info(f"New training session with {cfg}, using {world_size} of {available_gpus} available GPUs")
-            
-            # Set multiprocessing start method to spawn for better compatibility
-            mp.set_start_method('spawn', force=True)
-            
-            try:
-                mp.spawn(train, args=(world_size, cfg), nprocs=world_size, join=True)
-            except Exception as e:
-                _logger.error(f"Error in training: {str(e)}")
-                import traceback
-                traceback.print_exc()
-                sys.exit(1)
-        """ 
     elif args.cmd == "sample":
         cfg.update(vars(args))
         _logger.info(f"New sampling session with {cfg}")
