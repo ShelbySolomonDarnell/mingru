@@ -820,6 +820,14 @@ if __name__ == "__main__":
         "checkpoint_dir": _cfg.get("DS","checkpoint_dir", fallback="results/"),
         "load_checkpoint_dir": _cfg.get("DS", "load_checkpoint_dir", fallback="None"),
     }
+    
+    # Print the full configuration from settings.cfg
+    print("\n===== FULL CONFIGURATION FROM SETTINGS.CFG =====")
+    for section in _cfg.sections():
+        print(f"\n[{section}]")
+        for key, value in _cfg.items(section):
+            print(f"{key} = {value}")
+    print("================================================\n")
 
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="cmd")
