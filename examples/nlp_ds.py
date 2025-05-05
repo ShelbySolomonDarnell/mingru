@@ -6,6 +6,7 @@ https://github.com/cheind/mingru
 
 import logging
 from logging.handlers import RotatingFileHandler
+from typing import List
 import warnings
 from itertools import islice
 from pathlib import Path
@@ -32,17 +33,31 @@ import torch.multiprocessing as mp
 #from torch.nn.parallel import DistributedDataParallel as DDP
 #from torch.utils.data.distributed import DistributedSampler
 from torch.nn import Linear
+
+sys.path.append("..")
 from examples.utils import *
 from examples.utils import cfg as _cfg
-
 from mingru  import *
 from minlstm import *
 
 warnings.filterwarnings("ignore")
 
 _logger = logging.getLogger("nlp")
-handler = RotatingFileHandler("tmp/minrnn.boros.log", maxBytes=512000, backupCount=100)
+handler = RotatingFileHandler("/home/shelbys/code/werernns/mingru/tmp/minrnn.boros.log", maxBytes=512000, backupCount=100)
 _logger.addHandler(handler)
+
+def log_dist(message: str,
+            ranks: List[int] = [],
+            level: int = logging.INFO) -> None:
+    """Log messages for specified ranks only"""
+    my_rank = int(os.environ.get("RANK", "0"))
+    if my_rank in ranks:
+        if level == logging.INFO:
+            logger.info(f'[Rank {my_rank}] {message}')
+        if level == logging.ERROR:
+            logger.error(f'[Rank {my_rank}] {message}')
+        if level == logging.DEBUG:
+            logger.debug(f'[Rank {my_rank}] {message}')
 
 def get_architecture_name():
     """Get the architecture name from the config."""
@@ -280,21 +295,6 @@ def init_optimizer(params, the_cfg):
         """
     return result
 
-def setup_ddp(rank, world_size):
-    """Initialize the distributed environment."""
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
-    # Add timeout to prevent indefinite hanging
-    dist.init_process_group("nccl", rank=rank, world_size=world_size, timeout=datetime.timedelta(minutes=30))
-    # Set device for this process
-    torch.cuda.set_device(rank)
-
-def cleanup_ddp():
-    """Clean up the distributed environment."""
-    # Make sure all processes have completed before destroying the process group
-    torch.cuda.synchronize()
-    dist.destroy_process_group()
-
 def init_wandb(cfg, rank):
     """Initialize wandb logging.
     
@@ -346,7 +346,11 @@ def close_wandb(is_logging):
             _logger.warning(f"Error closing wandb: {str(e)}")
 
 def train(cfg,
-          local_rank: int = -1,):
+          local_rank: int = -1,
+          dtype: str = "bf16",
+          # Data checkpoint parameters
+          checkpoint_dir: str = None,
+          load_checkpoint_dir: str = None,):
     """Main training function that sets up distributed training if needed."""
     try:
         dev = (torch.device(get_accelerator().device_name(), local_rank) if (local_rank > -1)
@@ -358,15 +362,6 @@ def train(cfg,
         
         # Load datasets
         ds_train, ds_val = TokenIdDataset.from_textfile(cfg["textfile"], cfg["seqlen"])
-        '''
-        train_sampler = DistributedSampler(
-            ds_train, 
-            num_replicas=world_size, 
-            rank=rank,
-            shuffle=True
-        )
-        '''
-        
         dl_train = torch.utils.data.DataLoader(
             ds_train,
             batch_size=cfg["batch_size"],
@@ -390,6 +385,35 @@ def train(cfg,
         # Create model and move to device
         model = NLPModel(cfg).to(dev)
         #ddp_model = DDP(model, device_ids=[rank], find_unused_parameters=False)
+
+        log_dist("Model Creation Done", ranks=[0])
+        ################################
+        ###### DeepSpeed engine ########
+        ################################
+        log_dist("Creating DeepSpeed engine", ranks=[0])
+        assert (dtype == 'fp16' or dtype == 'bf16')
+        ds_config = {
+            "train_micro_batch_size_per_gpu": cfg["batch_size"],
+            "optimizer": {
+                "type": "Adam",
+                "params": {
+                    "lr": 1e-4
+                }
+            },
+            "dtype": {
+                "enabled": True
+            },
+            "zero_optimization": {
+                "stage": 1,
+                "offload_optimizer": {
+                    "device": "cpu"
+                }
+            }
+        }
+        model, _, _, _ = deepspeed.initialize(model=model,
+                                            model_parameters=model.parameters(),
+                                            config=ds_config)
+        log_dist("DeepSpeed engine created", ranks=[0])
 
         # Use label smoothing to improve training stability
         crit = torch.nn.CrossEntropyLoss(ignore_index=-1, label_smoothing=0.1)
@@ -417,6 +441,7 @@ def train(cfg,
             detached_hidden_state = None
             
         best_acc = 0  # Start with 0 since we're tracking accuracy (0-1)
+        model.train() # set model to training mode
         for epoch in range(cfg["num_epochs"]):
             # Set epoch for sampler to ensure different shuffling each epoch
             #train_sampler.set_epoch(epoch)
@@ -427,7 +452,8 @@ def train(cfg,
                 detached_c_state = []
             else:  # minGRU
                 detached_hidden_state = None
-                
+
+            # move training data to the device 
             for step, (x, y) in enumerate(dl_train):
                 x = x.to(dev, non_blocking=True)
                 y = y.to(dev, non_blocking=True)
@@ -437,19 +463,19 @@ def train(cfg,
                     if detached_h_state and detached_c_state:
                         # Use the separate states method for MinLSTM
                         #x_emb = ddp_model.module.emb(x)
-                        x_emb = model.module.emb(x)
+                        x_emb = model.emb(x)
                         try:
                             # Try using forward_with_separate_states if available
                             #rnn_out, h_out, c_out = ddp_model.module.rnn.forward_with_separate_states(x_emb, detached_h_state, detached_c_state)
-                            rnn_out, h_out, c_out = model.module.rnn.forward_with_separate_states(x_emb, detached_h_state, detached_c_state)
+                            rnn_out, h_out, c_out = model.rnn.forward_with_separate_states(x_emb, detached_h_state, detached_c_state)
                             #y_hat = ddp_model.module.fc(ddp_model.module.ln(rnn_out))
-                            y_hat = model.module.fc(model.module.ln(rnn_out))
+                            y_hat = model.fc(model.ln(rnn_out))
                         except AttributeError:
                             # Fall back to regular forward if the method is not available
                             #rnn_out, (h_out, c_out) = ddp_model.module.rnn(x_emb, (detached_h_state, detached_c_state))
-                            y_hat = model.module.fc(model.module.ln(rnn_out))
-                            rnn_out, (h_out, c_out) = model.module.rnn(x_emb, (detached_h_state, detached_c_state))
-                            y_hat = model.module.fc(model.module.ln(rnn_out))
+                            #y_hat = model.module.fc(model.module.ln(rnn_out))
+                            rnn_out, (h_out, c_out) = model.rnn(x_emb, (detached_h_state, detached_c_state))
+                            y_hat = model.fc(model.ln(rnn_out))
                         
                         # Detach states for next iteration
                         detached_h_state = detach_tensors_in_list(h_out)
@@ -467,10 +493,10 @@ def train(cfg,
                         # Use the separate states method for consistency
                         #x_emb = ddp_model.module.emb(x)
                         #rnn_out, h_out, _ = ddp_model.module.rnn.forward_with_separate_states(x_emb, detached_hidden_state)
-                        x_emb = model.module.emb(x)
-                        rnn_out, h_out, _ = model.module.rnn.forward_with_separate_states(x_emb, detached_hidden_state)
+                        x_emb = model.emb(x)
+                        rnn_out, h_out, _ = model.rnn.forward_with_separate_states(x_emb, detached_hidden_state)
                         #y_hat = ddp_model.module.fc(ddp_model.module.ln(rnn_out))
-                        y_hat = model.module.fc(model.module.ln(rnn_out))
+                        y_hat = model.fc(model.ln(rnn_out))
                         detached_hidden_state = detach_tensors_in_list(h_out)
                     else:
                         #y_hat, hidden_state = ddp_model(x)
@@ -548,7 +574,7 @@ def train(cfg,
                     
                     # Make sure to set model back to training mode
                     model.train()
-                    ddp_model.train()
+                    #ddp_model.train()
                     if (cfg["optim"] == "adamw"):
                         opt.train()
 
@@ -567,6 +593,7 @@ def train(cfg,
         cleanup_ddp()
         
     except Exception as e:
+        rank = 0 # remove when doing distributed
         # Log the error and clean up
         print(f"Error on rank {rank}: {str(e)}")
         import traceback
@@ -777,17 +804,21 @@ if __name__ == "__main__":
 
     # Load configuration
     cfg = {
-        "dataset":      _cfg.get("MAIN","datasetA", fallback="tiny-shakespeare"),
-        "arch":         _cfg.get("MAIN", "arch", fallback="minGRU"),
-        "lr":           _cfg.getfloat("MAIN","lr", fallback=0.001),
-        "batch_size":   _cfg.getint("MAIN","batch_size", fallback=64),
-        "num_epochs":   _cfg.getint("MAIN","num_epochs", fallback=5),
-        "dropout":      _cfg.getfloat("MAIN","dropout", fallback=0.1),
-        "norm":         _cfg.getboolean("MAIN", "norm", fallback=True),
-        "hidden_sizes": json.loads(_cfg.get("MAIN", "hidden_sizes", fallback="[256, 512, 1024]")),
-        "emb_size":     _cfg.getint("MAIN", "emb_size", fallback=768),
-        "vocab_size":   _cfg.getint("MAIN", "vocab_size", fallback=50257),
-        "seqlen":       _cfg.getint("MAIN", "seqlen", fallback=128),
+        "dataset":        _cfg.get("MAIN","datasetA", fallback="tiny-shakespeare"),
+        "arch":           _cfg.get("MAIN", "arch", fallback="minGRU"),
+        "lr":             _cfg.getfloat("MAIN","lr", fallback=0.001),
+        "batch_size":     _cfg.getint("MAIN","batch_size", fallback=64),
+        "num_epochs":     _cfg.getint("MAIN","num_epochs", fallback=5),
+        "dropout":        _cfg.getfloat("MAIN","dropout", fallback=0.1),
+        "norm":           _cfg.getboolean("MAIN", "norm", fallback=True),
+        "hidden_sizes":   json.loads(_cfg.get("MAIN", "hidden_sizes", fallback="[256, 512, 1024]")),
+        "emb_size":       _cfg.getint("MAIN", "emb_size", fallback=768),
+        "vocab_size":     _cfg.getint("MAIN", "vocab_size", fallback=50257),
+        "seqlen":         _cfg.getint("MAIN", "seqlen", fallback=128),
+        "dtype":          _cfg.get("DS", "dtype", fallback="bf16"),
+        "local_rank":     _cfg.getint("DS", "local_rank", fallback=-1),
+        "checkpoint_dir": _cfg.get("DS","checkpoint_dir", fallback="results/"),
+        "load_checkpoint_dir": _cfg.get("DS", "load_checkpoint_dir", fallback="None"),
     }
 
     parser = argparse.ArgumentParser()
